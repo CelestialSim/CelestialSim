@@ -18,18 +18,10 @@
     "content": [
       {
         "files": [
-          "index.md",
-          "getting-started.md",
-          "introduction.md",
-          "toc.yml"
-        ]
-      },
-      {
-        "files": [
           "docfx/api/**.yml",
-          "doxfx/api/**.yaml"
+          "docfx/api/**.yaml"
         ],
-        "cwd": "docfx"
+        "dest": "docfx/api"
       }
     ],
     "dest": "docfx/site",
