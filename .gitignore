@@ -7,5 +7,12 @@ snapshots/
 debug/
 *.import
 export_presets.cfg
-addons/godot_slang_importer/
 todos/
+rng_gdot.sln.DotSettings.user
+addons/godot_slang_importer/
+
+# docfx output -- this will be built manually
+docs/.mkdocs_mdx_cache/
+docs/site/
+docs/docfx/
+docs/_site/
