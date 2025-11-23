@@ -1,0 +1,11 @@
+# Godot 4+ specific ignores
+.godot/
+.vscode/settings.json
+builds/
+.idea/
+snapshots/
+debug/
+*.import
+export_presets.cfg
+addons/godot_slang_importer/
+todos/

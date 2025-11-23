@@ -1,0 +1,21 @@
+{
+    "version": "2.0.0",
+    "configurations": [
+        {
+            "name": "Launch Editor",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${config:godotTools.editorPath.godot4}",
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "justMyCode": false,
+            "stopAtEntry": false,
+            "args": [
+                "--path",
+                "${workspaceRoot}",
+                "--editor"
+            ]
+        },
+    ]
+}

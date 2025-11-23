@@ -1,0 +1,58 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Create release directory
+        run: |
+          mkdir -p release-temp/celestial_sim
+      
+      - name: Copy addons folder content
+        run: |
+          cp -r addons/celestial_sim/* release-temp/celestial_sim/
+      
+      - name: Remove .slang files
+        run: |
+          find release-temp -name "*.slang" -type f -delete
+      
+      - name: Remove .slang.import files
+        run: |
+          find release-temp -name "*.slang.import" -type f -delete
+      
+      - name: Create zip file
+        run: |
+          cd release-temp
+          zip -r ../celestial_sim-${{ inputs.version }}.zip celestial_sim
+          cd ..
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          body: ${{ inputs.release_notes }}
+          files: celestial_sim-${{ inputs.version }}.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

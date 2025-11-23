@@ -1,0 +1,19 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CelestialSim", "CelestialSim.csproj", "{540B7442-E513-4AC8-8D7F-1DA32496EE25}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+	Debug|Any CPU = Debug|Any CPU
+	ExportDebug|Any CPU = ExportDebug|Any CPU
+	ExportRelease|Any CPU = ExportRelease|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{540B7442-E513-4AC8-8D7F-1DA32496EE25}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{540B7442-E513-4AC8-8D7F-1DA32496EE25}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{540B7442-E513-4AC8-8D7F-1DA32496EE25}.ExportDebug|Any CPU.ActiveCfg = ExportDebug|Any CPU
+		{540B7442-E513-4AC8-8D7F-1DA32496EE25}.ExportDebug|Any CPU.Build.0 = ExportDebug|Any CPU
+		{540B7442-E513-4AC8-8D7F-1DA32496EE25}.ExportRelease|Any CPU.ActiveCfg = ExportRelease|Any CPU
+		{540B7442-E513-4AC8-8D7F-1DA32496EE25}.ExportRelease|Any CPU.Build.0 = ExportRelease|Any CPU
+	EndGlobalSection
+EndGlobal
