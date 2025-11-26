@@ -8,7 +8,7 @@ debug/
 *.import
 export_presets.cfg
 todos/
-rng_gdot.sln.DotSettings.user
+CelestialSim.sln.DotSettings.user
 addons/godot_slang_importer/
 
 # docfx output -- this will be built manually
