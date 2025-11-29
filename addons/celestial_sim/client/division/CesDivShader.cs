@@ -12,7 +12,7 @@ public class CesDivShader
     private readonly Rid _computeShader;
     private readonly RenderingDevice _rd;
     private readonly string addTrisPath = "res://addons/celestial_sim/client/division/CesDivShader.slang";
-    private readonly string removeTrisPath = "res://addons/celestial_sim/client/division/CesRemoveSmallTris.slang";
+    private readonly string mergeTrisPath = "res://addons/celestial_sim/client/division/CesMergeSmallTris.slang";
 
 
     public CesDivShader(RenderingDevice rd)
@@ -186,18 +186,18 @@ public class CesDivShader
             }
         }
 
-        // Use the separate t_to_remove_mask instead of inferring from t_to_divide_mask
-        var toRemoveMask = state.GetTToRemoveMask();
-        var indicesToRemove = new Array<uint>();
+        // Use the separate t_to_merge_mask instead of inferring from t_to_divide_mask
+        var toRemoveMask = state.GetTToMergeMask();
+        var idxs_to_merge = new Array<uint>();
         for (uint i = 0; i < toRemoveMask.Length; i++)
         {
             if (toRemoveMask[(int)i] != 0)
             {
-                indicesToRemove.Add(i);
+                idxs_to_merge.Add(i);
             }
         }
         var nTrisToDiv = indeicesToDiv.Count;
-        var nTrisToRemove = indicesToRemove.Count;
+        var n_tris_to_merge = idxs_to_merge.Count;
         var nTrisAdded = 4 * (uint)nTrisToDiv;
         var nVertsAdded = 3 * (uint)nTrisToDiv;
         if (nTrisAdded != 0)
@@ -225,7 +225,7 @@ public class CesDivShader
             state.t_divided.ExtendBuffer(sizeof(int) * nTrisAdded);
             state.t_deactivated.ExtendBuffer(sizeof(int) * nTrisAdded);
             state.t_to_divide_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_to_remove_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
+            state.t_to_merge_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
             state.t_ico_idx.ExtendBuffer(sizeof(int) * nTrisAdded);
             state.t_neight_ab.ExtendBuffer(sizeof(int) * nTrisAdded);
             state.t_neight_bc.ExtendBuffer(sizeof(int) * nTrisAdded);
@@ -291,15 +291,15 @@ public class CesDivShader
             // }
             return nTrisAdded;
         }
-        if (nTrisToRemove != 0)
+        if (n_tris_to_merge != 0)
         {
-            var indicesToRemoveBuffer = CesComputeUtils.CreateStorageBuffer(_rd, indicesToRemove.ToArray());
-            var trisOutputBuffer = CesComputeUtils.CreateStorageBuffer(_rd, new float[nTrisToRemove]);
+            var indicesToRemoveBuffer = CesComputeUtils.CreateStorageBuffer(_rd, idxs_to_merge.ToArray());
+            var trisOutputBuffer = CesComputeUtils.CreateStorageBuffer(_rd, new float[n_tris_to_merge]);
             var bufferInfosRemove = new BufferInfo[]
             {
                 state.t_abc,
                 state.t_divided,
-                CesComputeUtils.CreateUniformBuffer(_rd, nTrisToRemove),
+                CesComputeUtils.CreateUniformBuffer(_rd, n_tris_to_merge),
                 state.t_neight_ab,
                 state.t_neight_bc,
                 state.t_neight_ca,
@@ -307,15 +307,18 @@ public class CesDivShader
                 state.t_b_t,
                 state.t_c_t,
                 state.t_center_t,
-                state.t_to_remove_mask,
                 indicesToRemoveBuffer,
+                state.t_to_merge_mask,
                 trisOutputBuffer,
                 state.t_deactivated,
                 state.t_lv,
-                state.v_update_mask
+                state.v_update_mask,
+                state.v_pos,
+                state.t_parent,
             };
 
-            CesComputeUtils.DispatchShader(_rd, removeTrisPath, bufferInfosRemove, (uint)nTrisToRemove);
+            CesComputeUtils.DispatchShader(_rd, mergeTrisPath, bufferInfosRemove, (uint)n_tris_to_merge);
+            GD.Print($"Merged {n_tris_to_merge} triangle(s) (removed {n_tris_to_merge * 4} child triangles)");
             // var trisOutput = CesComputeUtils.ConvertBufferToArray<float>(_rd, trisOutputBuffer);
         }
         return nTrisAdded;

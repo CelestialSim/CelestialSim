@@ -44,9 +44,9 @@ StructuredBuffer<int> t_neigh_ca;
 [[vk::binding(13, 0)]]
 StructuredBuffer<int> t_deactivated;
 
-// To-remove mask for triangles that should be undivided
+// To-remove mask for triangles that should be merged
 [[vk::binding(14, 0)]]
-RWStructuredBuffer<int> t_to_remove;
+RWStructuredBuffer<int> t_to_merge_mask;
 
 // Camera parameters from viewport settings
 static const float fov = 75.0f;         // Field of view in degrees
@@ -90,7 +90,6 @@ float calculateScreenArea(int triIdx)
     return screen_area;
 }
 
-
 // Main compute shader function
 [shader("compute")]
 [numthreads(2, 1, 1)]
@@ -100,7 +99,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
 
     // Initialize outputs
     t_to_div[idx] = 0;
-    t_to_remove[idx] = 0;
+    t_to_merge_mask[idx] = 0;
 
     // Skip if already at max subdivisions
     if (t_lv[idx] >= max_divs)
@@ -121,10 +120,10 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     // Check if triangle is large enough to divide
     t_to_div[idx] = screenArea > max_tri_size;
 
-    // Check if divided triangle is now too small and should be undivided
+    // Check if divided triangle is now too small and should be merged
     // TODO: Use a threshold (e.g., 1/4 of max_tri_size) to avoid thrashing
     // if (t_divided[idx] == 1 && t_to_div[idx] == 0)
     // {
-    //     t_to_remove[idx] = 1;
+    //     t_to_merge_mask[idx] = 1;
     // }
 }

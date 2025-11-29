@@ -255,6 +255,7 @@ public partial class CesCelestial : Node3D
         if (ctrlPressed && !_ctrlWasPressed)
         {
             // Ctrl just pressed - find triangle and increase its level
+            // Always use editor camera when Ctrl is pressed in debug mode
             var ray = GetMouseRayInLocalCoordinates();
             if (ray.HasValue)
             {
@@ -310,11 +311,12 @@ public partial class CesCelestial : Node3D
 
         _ctrlWasPressed = ctrlPressed;
 
-        // Ctrl + Left Click to undivide triangle
+        // Ctrl + Left Click to merge triangle
         bool ctrlLeftClick = ctrlPressed && Input.IsMouseButtonPressed(MouseButton.Left);
 
         if (ctrlLeftClick && !_rightMouseWasPressed)
         {
+            // Always use editor camera when Ctrl is pressed in debug mode
             var ray = GetMouseRayInLocalCoordinates();
             if (ray.HasValue)
             {
@@ -339,12 +341,12 @@ public partial class CesCelestial : Node3D
                             var parentInfo = GetTriangleInfo(parentIndex);
                             if (parentInfo.HasValue && parentInfo.Value.IsDivided == 1)
                             {
-                                // Undivide the parent triangle
-                                UndivideTriangle(parentIndex);
-                                GD.Print($"Removed 1 triangle (undivided parent triangle {parentIndex})");
+                                // Mark the parent triangle for merging
+                                MarkTriangleToMerge(parentIndex);
 
-                                // Apply the undivision immediately
+                                // Apply the merge immediately
                                 ApplyManualDivisions();
+                                GD.Print($"Merged parent triangle {parentIndex} (removed 4 child triangles)");
                             }
                             else
                             {
@@ -497,15 +499,11 @@ public partial class CesCelestial : Node3D
     /// <returns>A tuple containing the ray origin and direction in local coordinates, or null if the camera is not available.</returns>
     public (Vector3 origin, Vector3 direction)? GetMouseRayInLocalCoordinates()
     {
-        // Force camera update to get the current editor camera
-        _UpdateCamera();
-
-        if (MainCamera == null)
-            return null;
+        Camera3D camera = EditorInterface.Singleton.GetEditorViewport3D().GetCamera3D();
 
         // Use the camera's forward direction (-Z axis in camera's local space)
-        var cameraTransform = MainCamera.GlobalTransform;
-        var globalOrigin = MainCamera.GlobalPosition;
+        var cameraTransform = camera.GlobalTransform;
+        var globalOrigin = camera.GlobalPosition;
         var globalDirection = -cameraTransform.Basis.Z; // Camera looks down -Z axis
 
         // GD.Print($"Global Origin: {globalOrigin}");
@@ -678,9 +676,10 @@ public partial class CesCelestial : Node3D
     }
 
     /// <summary>
-    /// Undivides a triangle by marking it as not divided and deactivating its children.
+    /// Marks a triangle to be merged on the next mesh update.
+    /// The actual merge is performed by CesMergeSmallTris shader during UpdateTriangleGraph.
     /// </summary>
-    public void UndivideTriangle(int triangleIndex)
+    public void MarkTriangleToMerge(int triangleIndex)
     {
         if (_graphGenerator?.State == null)
         {
@@ -690,28 +689,19 @@ public partial class CesCelestial : Node3D
 
         var state = _graphGenerator.State;
 
-        var shaderPath = "res://addons/celestial_sim/client/division/UndivideTriangle.slang";
+        var shaderPath = "res://addons/celestial_sim/client/division/MarkTriangleToMerge.slang";
 
         var bufferInfos = new BufferInfo[]
         {
-            state.t_divided,                                                           // divided mask (read-write)
-            state.t_deactivated,                                                       // deactivated mask (read-write)
-            state.t_a_t,                                                               // child A triangle
-            state.t_b_t,                                                               // child B triangle
-            state.t_c_t,                                                               // child C triangle
-            state.t_center_t,                                                          // child center triangle
-            CesComputeUtils.CreateUniformBuffer(rd, triangleIndex),                   // triangle index to undivide
-            state.t_lv,                                                               // triangle levels
-            state.t_neight_ab,                                                        // neighbour AB
-            state.t_neight_bc,                                                        // neighbour BC
-            state.t_neight_ca                                                         // neighbour CA
+            state.t_to_merge_mask,                                                    // to-merge mask buffer (read-write)
+            CesComputeUtils.CreateUniformBuffer(rd, triangleIndex),                   // triangle index to mark
         };
 
         // Dispatch with only 1 thread
         CesComputeUtils.DispatchShader(rd, shaderPath, bufferInfos, 1);
 
         // Clean up temporary buffer
-        rd.FreeRid(bufferInfos[6].buffer);
+        rd.FreeRid(bufferInfos[1].buffer);
     }
 
     /// <summary>
@@ -772,7 +762,7 @@ public partial class CesCelestial : Node3D
     /// <summary>
     /// Applies debug triangle divisions from the DebugTriangleIndicesToDivide array.
     /// Called automatically after the first mesh generation when in debug mode.
-    /// Positive indices divide triangles, negative indices undivide triangles.
+    /// Positive indices divide triangles, negative indices merge triangles.
     /// </summary>
     private void ApplyDebugDivisions()
     {
@@ -782,7 +772,7 @@ public partial class CesCelestial : Node3D
         GD.Print($"Applying {DebugTriangleIndicesToDivide.Count} debug triangle operations...");
 
         int dividedCount = 0;
-        int undividedCount = 0;
+        int mergedCount = 0;
 
         // Process all triangle indices
         foreach (int value in DebugTriangleIndicesToDivide)
@@ -796,28 +786,28 @@ public partial class CesCelestial : Node3D
             }
             else
             {
-                // Negative index: undivide triangle
+                // Negative index: merge triangle
                 int triangleIndex = -value;
 
-                // Check if triangle is divided before trying to undivide
+                // Check if triangle is divided before trying to merge
                 var triangleInfo = GetTriangleInfo(triangleIndex);
                 if (triangleInfo.HasValue && triangleInfo.Value.IsDivided == 1)
                 {
-                    UndivideTriangle(triangleIndex);
+                    MarkTriangleToMerge(triangleIndex);
                     ApplyManualDivisions();
-                    undividedCount++;
+                    mergedCount++;
                 }
                 else
                 {
-                    GD.Print($"Triangle {triangleIndex} cannot be undivided (not divided or invalid)");
+                    GD.Print($"Triangle {triangleIndex} cannot be merged (not divided or invalid)");
                 }
             }
         }
 
         if (dividedCount > 0)
             GD.Print($"Auto-divided {dividedCount} triangle(s) in debug mode");
-        if (undividedCount > 0)
-            GD.Print($"Auto-undivided {undividedCount} triangle(s) in debug mode");
+        if (mergedCount > 0)
+            GD.Print($"Auto-merged {mergedCount} triangle(s) in debug mode (removed {mergedCount * 4} child triangles)");
     }
 
     /// <summary>
@@ -1256,7 +1246,7 @@ public partial class CesCelestial : Node3D
     [Export]
     public bool ShowDebugMessages = false;
 
-    [Export(hintString: "Enable manual triangle division/undivision controls and skip automatic LOD marking")]
+    [Export(hintString: "Enable manual triangle division/undivision controls and skip automatic LOD marking. Shortcuts: Shift+Click to divide, Ctrl+Click to merge, Ctrl (hold) to inspect triangle")]
     public bool DebugMode
     {
         get => _debugMode;
@@ -1274,7 +1264,7 @@ public partial class CesCelestial : Node3D
         }
     }
 
-    [Export(PropertyHint.None, "Array of triangle indices to automatically divide or undivide when Debug Mode is enabled. Use positive indices to divide triangles, negative indices to undivide triangles (e.g., -5 will undivide triangle 5).")]
+    [Export(PropertyHint.None, "Array of triangle indices to automatically divide or merge when Debug Mode is enabled. Use positive indices to divide triangles, negative indices to merge triangles (e.g., -5 will merge triangle 5).")]
     public Godot.Collections.Array<int> DebugTriangleIndicesToDivide = new();
 
     [Export]

@@ -104,7 +104,7 @@ public class CesCoreState
             // t_parent_t = CesComputeUtils.CreateStorageBuffer(rd, tParentT),
             v_update_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(1, nVerts).ToArray()),
             t_to_divide_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
-            t_to_remove_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
+            t_to_merge_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
             // sim_value = CesComputeUtils.CreateStorageBuffer(rd, simValue),
             // old_state_pointer = CesComputeUtils.CreateStorageBuffer(rd, oldStatePointer()),
             startIdx = 0,

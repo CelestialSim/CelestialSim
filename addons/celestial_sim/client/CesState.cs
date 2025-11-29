@@ -37,7 +37,7 @@ public class CesState
 
     public BufferInfo t_to_divide_mask;
 
-    public BufferInfo t_to_remove_mask; // Mask for triangles to undivide/remove
+    public BufferInfo t_to_merge_mask; // Mask for triangles to merge/remove
 
     public BufferInfo v_pos; // float4[]
 
@@ -67,7 +67,7 @@ public class CesState
             t_neight_bc.buffer,
             t_neight_ca.buffer,
             t_to_divide_mask.buffer,
-            t_to_remove_mask.buffer,
+            t_to_merge_mask.buffer,
             v_pos.buffer,
             v_update_mask.buffer
         ];
@@ -97,10 +97,10 @@ public class CesState
         return indices;
     }
 
-    // Returns to indices of triangles that should be undivided/removed
-    public Span<int> GetTToRemoveMask()
+    // Returns to indices of triangles that should be merged/removed
+    public Span<int> GetTToMergeMask()
     {
-        var indices = CesComputeUtils.ConvertBufferToArray<int>(rd, t_to_remove_mask);
+        var indices = CesComputeUtils.ConvertBufferToArray<int>(rd, t_to_merge_mask);
 
         return indices;
     }

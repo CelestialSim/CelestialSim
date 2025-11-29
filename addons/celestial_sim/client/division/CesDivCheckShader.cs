@@ -35,7 +35,7 @@ public class CesDivCheckShader
             cesState.t_neight_bc,
             cesState.t_neight_ca,
             cesState.t_deactivated,
-            cesState.t_to_remove_mask
+            cesState.t_to_merge_mask
         };
 
 

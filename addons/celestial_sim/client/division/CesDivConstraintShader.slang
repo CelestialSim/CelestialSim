@@ -75,6 +75,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     }
 
     // TODO: check triangles to remove constraints
+    // Now all removal constraints are considered satisfied
 
     // All constraints passed, triangle can be divided
     // t_to_div[idx] remains 1
