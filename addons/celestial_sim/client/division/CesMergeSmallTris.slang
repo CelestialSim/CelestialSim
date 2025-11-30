@@ -39,7 +39,7 @@ RWStructuredBuffer<int> t_center_t;
 StructuredBuffer<uint> idxs_to_merge;
 
 [[vk::binding(11, 0)]]
-StructuredBuffer<uint> t_to_merge_mask;
+RWStructuredBuffer<uint> t_to_merge_mask;
 
 [[vk::binding(12, 0)]]
 RWStructuredBuffer<float> tris_out;
@@ -152,6 +152,8 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
 
     // set divided flag
     t_divided[idx] = 0;
+    // Mark tris as merged
+    t_to_merge_mask[idx] = 0;
     t_deactivated[t_a_t[idx]] = 1;
     t_deactivated[t_b_t[idx]] = 1;
     t_deactivated[t_c_t[idx]] = 1;

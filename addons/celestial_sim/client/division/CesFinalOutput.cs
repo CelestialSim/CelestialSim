@@ -15,25 +15,28 @@ public class CesFinalOutput
         {
             visibleMask[i] = (divMask[i] == 0 && deactivatedMask[i] == 0) ? 1 : 0;
         }
-        var undividedSum = CesComputeUtils.SumArrayInPlace(visibleMask, false);
-        var numUndividedTris = (uint)undividedSum[^1];
-        var undividedSumBuffer = CesComputeUtils.CreateStorageBuffer(rd, undividedSum);
+        // Here we are making an array of indices to reduce output dim and exclude invisible tris
+        // [0,0,0,1,2,2] and gives as an array of size 2
+        var visibleTrisMaskSum = CesComputeUtils.SumArrayInPlace(visibleMask, false);
+        var numVisibleTris = (uint)visibleTrisMaskSum[^1];
+        GD.Print($"Number of invisible (deactivate + parents) triangles: {state.nTris - numVisibleTris}");
+        var undividedSumBuffer = CesComputeUtils.CreateStorageBuffer(rd, visibleTrisMaskSum);
         var shaderPath = "res://addons/celestial_sim/client/division/ComputeNormals.slang";
         // var fullLv = state.GetLevel().ToArray();
         // var tris = state.GetDividedTris(divided);
-        var dividedTrisBytes = numUndividedTris * 4;
+        var visibleTrisBytes = numVisibleTris * 4;
         var v_pos = state.GetPos();
         Vector3[] pos = [];
 
         Vector3[] norm = [];
         Vector2[] sim = [];
         int[] tris = [];
-        var tNormBuf = cache.GetOrCreateBuffer(rd, "t_norm", dividedTrisBytes * 3);
-        var dividedTris = cache.GetOrCreateBuffer(rd, "dividedTris", dividedTrisBytes * 3);
-        var simValue = cache.GetOrCreateBuffer(rd, "simValue", dividedTrisBytes);
-        if (lowPoly)
+        var tNormBuf = cache.GetOrCreateBuffer(rd, "t_norm", visibleTrisBytes * 3);
+        var dividedTris = cache.GetOrCreateBuffer(rd, "dividedTris", visibleTrisBytes * 3);
+        var simValue = cache.GetOrCreateBuffer(rd, "simValue", visibleTrisBytes);
+        if (lowPoly) // TODO: Only this branch is currently implemented
         {
-            var tripledVertices = cache.GetOrCreateBuffer(rd, "tripledVertices", dividedTrisBytes * 3 * 3);
+            var tripledVertices = cache.GetOrCreateBuffer(rd, "tripledVertices", visibleTrisBytes * 3 * 3);
             var bufferInfos = new BufferInfo[]
             {
                 state.v_pos,
@@ -52,19 +55,20 @@ public class CesFinalOutput
             CesComputeUtils.DispatchShader(rd, shaderPath, bufferInfos, state.nTris);
 
             var partNorm = CesComputeUtils.ConvertBufferToArray<Vector3>(rd, tNormBuf);
-            norm = new Vector3[(int)(numUndividedTris * 3)];
-            for (var i = 0; i < numUndividedTris * 3; i++) norm[i] = partNorm[i / 3];
+            norm = new Vector3[(int)(numVisibleTris * 3)];
+            for (var i = 0; i < numVisibleTris * 3; i++) norm[i] = partNorm[i / 3];
 
             var partSim = CesComputeUtils.ConvertBufferToArray<float>(rd, simValue);
-            sim = new Vector2[(int)(numUndividedTris * 3)];
-            for (var i = 0; i < numUndividedTris * 3; i++) sim[i] = new Vector2(partSim[i / 3], 0);
+            sim = new Vector2[(int)(numVisibleTris * 3)];
+            for (var i = 0; i < numVisibleTris * 3; i++) sim[i] = new Vector2(partSim[i / 3], 0);
 
             pos = CesComputeUtils.ConvertBufferToArray<Vector3>(rd, tripledVertices).ToArray();
 
-            tris = Enumerable.Range(0, (int)(numUndividedTris * 3)).ToArray();
+            tris = Enumerable.Range(0, (int)(numVisibleTris * 3)).ToArray();
         }
         else
         {
+            throw new System.NotImplementedException("Smooth shading branch is not yet implemented.");
             var compressedVertsBytes = state.nVerts * 3 * sizeof(float);
             var compressedVerts = cache.GetOrCreateBuffer(rd, "compressedVerts", compressedVertsBytes);
             var bufferInfos = new BufferInfo[]

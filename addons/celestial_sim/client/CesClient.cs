@@ -56,13 +56,15 @@ internal class CesClient
         // State = CesCoreState.CreateCoreState(gen.rd);
 
         // for each subdivision, get the output and use it as input
-        CesDivShader cesDivShader = new(State.rd);
+        CesDivLOD cesDivLOD = new(State.rd);
+        CesMergeLOD cesMergeLOD = new(State.rd);
         CesDivConstraintShader constraintShader = new(State.rd);
         CesDivCheckShader divCheckShader = new(State.rd);
 
         uint nTrisAdded = 0;
+        uint nTrisMerged = 0;
         bool firstRun = true;
-        while (nTrisAdded > 0 || firstRun)
+        while (nTrisAdded > 0 || nTrisMerged > 0 || firstRun)
         {
             firstRun = false;
 
@@ -75,10 +77,17 @@ internal class CesClient
             // Validate constraints before attempting division (always run before MakeDiv)
             constraintShader.ValidateDivisionConstraints(State, gen.Subdivisions);
 
-            nTrisAdded = cesDivShader.MakeDiv(State, gen.PreciseNormals, cache);
+            nTrisAdded = cesDivLOD.MakeDiv(State, gen.PreciseNormals, cache);
             if (nTrisAdded > 0)
             {
                 GD.Print($"Divided {nTrisAdded / 4} triangles");
+            }
+
+            // Merge small triangles (decrease LOD where needed)
+            nTrisMerged = cesMergeLOD.MakeMerge(State);
+            if (nTrisMerged > 0)
+            {
+                GD.Print($"Merged {nTrisMerged/4} triangle(s) (removed {nTrisMerged} child triangles)");
             }
 
 

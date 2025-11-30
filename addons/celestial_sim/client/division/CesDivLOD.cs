@@ -7,15 +7,12 @@ using Godot.Collections;
 
 namespace CelestialSim.addons.celestial_sim.client.division;
 
-public class CesDivShader
+public class CesDivLOD
 {
-    private readonly Rid _computeShader;
     private readonly RenderingDevice _rd;
     private readonly string addTrisPath = "res://addons/celestial_sim/client/division/CesDivShader.slang";
-    private readonly string mergeTrisPath = "res://addons/celestial_sim/client/division/CesMergeSmallTris.slang";
 
-
-    public CesDivShader(RenderingDevice rd)
+    public CesDivLOD(RenderingDevice rd)
     {
         _rd = rd;
     }
@@ -24,7 +21,6 @@ public class CesDivShader
     {
         return a < b ? [a, b] : [b, a];
     }
-
 
     private Span<CesState.Triangle> ComputeNewIndices(CesState s, out uint numNewVerts)
     {
@@ -186,141 +182,102 @@ public class CesDivShader
             }
         }
 
-        // Use the separate t_to_merge_mask instead of inferring from t_to_divide_mask
-        var toRemoveMask = state.GetTToMergeMask();
-        var idxs_to_merge = new Array<uint>();
-        for (uint i = 0; i < toRemoveMask.Length; i++)
-        {
-            if (toRemoveMask[(int)i] != 0)
-            {
-                idxs_to_merge.Add(i);
-            }
-        }
         var nTrisToDiv = indeicesToDiv.Count;
-        var n_tris_to_merge = idxs_to_merge.Count;
         var nTrisAdded = 4 * (uint)nTrisToDiv;
         var nVertsAdded = 3 * (uint)nTrisToDiv;
-        if (nTrisAdded != 0)
+
+        if (nTrisAdded == 0)
         {
-            var startIdx = state.startIdx;
-            state.startIdx = state.nTris;
-
-            var indicesToDivBuffer = CesComputeUtils.CreateStorageBuffer(_rd, indeicesToDiv.ToArray());
-
-            // Compute new indices
-            state.t_abc.ExtendBuffer(4 * sizeof(int) * nTrisAdded);
-            if (removeRepeatedVerts == 1)
-            {
-                var newIndices = ComputeNewIndices(state, out nVertsAdded);
-                state.t_abc = CesComputeUtils.CreateStorageBuffer(_rd, newIndices);
-            }
-
-            state.nTris += nTrisAdded;
-            state.nVerts += nVertsAdded;
-
-            // Extend buffers
-            state.v_pos.ExtendBuffer(4 * sizeof(float) * nVertsAdded);
-            state.v_update_mask.ExtendBuffer(sizeof(int) * nVertsAdded);
-            state.t_lv.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_divided.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_deactivated.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_to_divide_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_to_merge_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_ico_idx.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_neight_ab.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_neight_bc.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_neight_ca.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_a_t.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_b_t.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_c_t.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_center_t.ExtendBuffer(sizeof(int) * nTrisAdded);
-            state.t_parent.ExtendBuffer(sizeof(int) * nTrisAdded);
-
-            var trisOutputBuffer = CesComputeUtils.CreateStorageBuffer(_rd, new float[nTrisToDiv]);
-            var toDivMaskArray = state.GetTToDivideMask();
-            var tDivided = state.GetDividedMask();
-            //Add temp test buffer
-            // var tempBytes = new byte[state.nTris * sizeof(int)];
-            // var emptyBuffer = rd.StorageBufferCreate((uint)tempBytes.Length, tempBytes);
-            // Bind buffers
-            var bufferInfos = new BufferInfo[]
-            {
-                state.v_pos,
-                state.t_abc,
-                state.t_divided,
-                state.t_to_divide_mask,
-                CesComputeUtils.CreateUniformBuffer(_rd, state.nTris - nTrisAdded),
-                CesComputeUtils.CreateUniformBuffer(_rd, state.nVerts - nVertsAdded),
-                CesComputeUtils.CreateUniformBuffer(_rd, nTrisAdded),
-                CesComputeUtils.CreateUniformBuffer(_rd, nVertsAdded),
-                CesComputeUtils.CreateUniformBuffer(_rd, startIdx),
-                // sumBuffer,
-                state.v_update_mask,
-                state.t_ico_idx,
-                state.t_neight_ab,
-                state.t_neight_bc,
-                state.t_neight_ca,
-                state.t_a_t,
-                state.t_b_t,
-                state.t_c_t,
-                state.t_center_t,
-                state.t_parent,
-                CesComputeUtils.CreateUniformBuffer(_rd, removeRepeatedVerts),
-                state.t_lv,
-                indicesToDivBuffer,
-                trisOutputBuffer
-            };
-
-            // Dispatch compute shader
-            // a check is necessary in the shader to avoid random values filling the
-            // elements with the t_to_divide_mask buffer between the old and new triangles
-            // happens after 4 divisions
-
-            CesComputeUtils.DispatchShader(_rd, addTrisPath, bufferInfos, (uint)nTrisToDiv);
-            var trisOutput = CesComputeUtils.ConvertBufferToArray<float>(_rd, trisOutputBuffer);
-            var toDivMaskArray1 = state.GetTToDivideMask();
-            var tDivided1 = state.GetDividedMask();
-            var vToUpdate = CesComputeUtils.ConvertBufferToArray<int>(_rd, state.v_update_mask);
-            // var vPos = state.GetPos();
-            // for (var i = 0; i < vToUpdate.Length; i++)
-            // {
-            //     if (vToUpdate[i] != 0)
-            //     {
-            //         CesShaderDebugUtils.SpawnDebugSphere(10f, 0.1f, Colors.Red, vPos[i]);
-            //     }
-            // }
-            return nTrisAdded;
+            return 0;
         }
-        if (n_tris_to_merge != 0)
+
+        var startIdx = state.startIdx;
+        state.startIdx = state.nTris;
+
+        var indicesToDivBuffer = CesComputeUtils.CreateStorageBuffer(_rd, indeicesToDiv.ToArray());
+
+        // Compute new indices
+        state.t_abc.ExtendBuffer(4 * sizeof(int) * nTrisAdded);
+        if (removeRepeatedVerts == 1)
         {
-            var indicesToRemoveBuffer = CesComputeUtils.CreateStorageBuffer(_rd, idxs_to_merge.ToArray());
-            var trisOutputBuffer = CesComputeUtils.CreateStorageBuffer(_rd, new float[n_tris_to_merge]);
-            var bufferInfosRemove = new BufferInfo[]
-            {
-                state.t_abc,
-                state.t_divided,
-                CesComputeUtils.CreateUniformBuffer(_rd, n_tris_to_merge),
-                state.t_neight_ab,
-                state.t_neight_bc,
-                state.t_neight_ca,
-                state.t_a_t,
-                state.t_b_t,
-                state.t_c_t,
-                state.t_center_t,
-                indicesToRemoveBuffer,
-                state.t_to_merge_mask,
-                trisOutputBuffer,
-                state.t_deactivated,
-                state.t_lv,
-                state.v_update_mask,
-                state.v_pos,
-                state.t_parent,
-            };
-
-            CesComputeUtils.DispatchShader(_rd, mergeTrisPath, bufferInfosRemove, (uint)n_tris_to_merge);
-            GD.Print($"Merged {n_tris_to_merge} triangle(s) (removed {n_tris_to_merge * 4} child triangles)");
-            // var trisOutput = CesComputeUtils.ConvertBufferToArray<float>(_rd, trisOutputBuffer);
+            var newIndices = ComputeNewIndices(state, out nVertsAdded);
+            state.t_abc = CesComputeUtils.CreateStorageBuffer(_rd, newIndices);
         }
+
+        state.nTris += nTrisAdded;
+        state.nVerts += nVertsAdded;
+
+        // Extend buffers
+        state.v_pos.ExtendBuffer(4 * sizeof(float) * nVertsAdded);
+        state.v_update_mask.ExtendBuffer(sizeof(int) * nVertsAdded);
+        state.t_lv.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_divided.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_deactivated.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_to_divide_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_to_merge_mask.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_ico_idx.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_neight_ab.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_neight_bc.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_neight_ca.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_a_t.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_b_t.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_c_t.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_center_t.ExtendBuffer(sizeof(int) * nTrisAdded);
+        state.t_parent.ExtendBuffer(sizeof(int) * nTrisAdded);
+
+        var trisOutputBuffer = CesComputeUtils.CreateStorageBuffer(_rd, new float[nTrisToDiv]);
+        var toDivMaskArray = state.GetTToDivideMask();
+        var tDivided = state.GetDividedMask();
+        //Add temp test buffer
+        // var tempBytes = new byte[state.nTris * sizeof(int)];
+        // var emptyBuffer = rd.StorageBufferCreate((uint)tempBytes.Length, tempBytes);
+        // Bind buffers
+        var bufferInfos = new BufferInfo[]
+        {
+            state.v_pos,
+            state.t_abc,
+            state.t_divided,
+            state.t_to_divide_mask,
+            CesComputeUtils.CreateUniformBuffer(_rd, state.nTris - nTrisAdded),
+            CesComputeUtils.CreateUniformBuffer(_rd, state.nVerts - nVertsAdded),
+            CesComputeUtils.CreateUniformBuffer(_rd, nTrisAdded),
+            CesComputeUtils.CreateUniformBuffer(_rd, nVertsAdded),
+            CesComputeUtils.CreateUniformBuffer(_rd, startIdx),
+            // sumBuffer,
+            state.v_update_mask,
+            state.t_ico_idx,
+            state.t_neight_ab,
+            state.t_neight_bc,
+            state.t_neight_ca,
+            state.t_a_t,
+            state.t_b_t,
+            state.t_c_t,
+            state.t_center_t,
+            state.t_parent,
+            CesComputeUtils.CreateUniformBuffer(_rd, removeRepeatedVerts),
+            state.t_lv,
+            indicesToDivBuffer,
+            trisOutputBuffer
+        };
+
+        // Dispatch compute shader
+        // a check is necessary in the shader to avoid random values filling the
+        // elements with the t_to_divide_mask buffer between the old and new triangles
+        // happens after 4 divisions
+
+        CesComputeUtils.DispatchShader(_rd, addTrisPath, bufferInfos, (uint)nTrisToDiv);
+        var trisOutput = CesComputeUtils.ConvertBufferToArray<float>(_rd, trisOutputBuffer);
+        var toDivMaskArray1 = state.GetTToDivideMask();
+        var tDivided1 = state.GetDividedMask();
+        var vToUpdate = CesComputeUtils.ConvertBufferToArray<int>(_rd, state.v_update_mask);
+        // var vPos = state.GetPos();
+        // for (var i = 0; i < vToUpdate.Length; i++)
+        // {
+        //     if (vToUpdate[i] != 0)
+        //     {
+        //         CesShaderDebugUtils.SpawnDebugSphere(10f, 0.1f, Colors.Red, vPos[i]);
+        //     }
+        // }
         return nTrisAdded;
     }
 }

@@ -12,7 +12,7 @@ StructuredBuffer<int3> t_abc;
 StructuredBuffer<int> t_divided;
 
 [[vk::binding(4, 0)]]
-StructuredBuffer<int> dividedSum;
+StructuredBuffer<int> visible_tris_mask_sum;
 
 [[vk::binding(5, 0)]]
 ConstantBuffer<uint> totalTris;
@@ -53,7 +53,7 @@ void computeMain(uint3 DTid : SV_DispatchThreadID)
 {   
     uint tidx = DTid.x;
     if (tidx >= totalTris || t_divided[tidx] == 1) return;
-    uint outidx = dividedSum[tidx] - 1;
+    uint outidx = visible_tris_mask_sum[tidx] - 1;
     // Compute triangle normal
     var tidx_norm = computeNormals(tidx);
     var abc = t_abc[tidx];
@@ -116,9 +116,7 @@ void computeMain(uint3 DTid : SV_DispatchThreadID)
         // simValue[abc.y * 2 + 1] = simvalueInt[abc.y * 2 + 1];
         // simValue[abc.z * 2] = simvalueInt[abc.z * 2];
         // simValue[abc.z * 2 + 1] = simvalueInt[abc.z * 2 + 1];
-
-
-    } else {
+    } else { // TODO: Only this branch is currently implemented
         // vertex a
         outputVerts[outidx * 3 * 3] = vertices[abc.x].x;
         outputVerts[outidx * 3 * 3 + 1] = vertices[abc.x].y;

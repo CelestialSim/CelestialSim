@@ -44,9 +44,12 @@ StructuredBuffer<int> t_neigh_ca;
 [[vk::binding(13, 0)]]
 StructuredBuffer<int> t_deactivated;
 
-// To-remove mask for triangles that should be merged
+// Mask for triangles that should be merged
 [[vk::binding(14, 0)]]
 RWStructuredBuffer<int> t_to_merge_mask;
+
+[[vk::binding(15, 0)]]
+StructuredBuffer<uint> t_parent;
 
 // Camera parameters from viewport settings
 static const float fov = 75.0f;         // Field of view in degrees
@@ -101,29 +104,48 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     t_to_div[idx] = 0;
     t_to_merge_mask[idx] = 0;
 
-    // Skip if already at max subdivisions
-    if (t_lv[idx] >= max_divs)
-    {
-        return;
-    }
 
     // Skip if triangle is deactivated
     if (t_deactivated[idx] != 0)
     {
         return;
     }
+    // We always merge the parent triangle, not the children    
+    // Merge if max subdivisions has been reduced by the user
+    if (t_lv[idx] > max_divs)
+    {
 
-    // Calculate screen area
+        t_to_merge_mask[t_parent[idx]] = 1;
+        return;
+    }
+
     float screenArea = calculateScreenArea(idx);
-    tris_size[idx] = screenArea;
-
-    // Check if triangle is large enough to divide
-    t_to_div[idx] = screenArea > max_tri_size;
+    if (t_lv[idx] < max_divs)
+    {
+        // Calculate screen area
+        tris_size[idx] = screenArea;
+        
+        // Check if triangle is large enough to divide
+        t_to_div[idx] = screenArea > max_tri_size;
+    }
 
     // Check if divided triangle is now too small and should be merged
     // TODO: Use a threshold (e.g., 1/4 of max_tri_size) to avoid thrashing
     // if (t_divided[idx] == 1 && t_to_div[idx] == 0)
     // {
-    //     t_to_merge_mask[idx] = 1;
+    //     t_to_merge_mask[t_parent[idx]] = 1;
     // }
+
+    // Cannot merge core tris
+    if (idx < 20) {
+        return;
+    }
+
+    float parentScreenArea = calculateScreenArea(t_parent[idx]);
+
+    // t_divided[idx] == 0 to divide only children
+    if (parentScreenArea < (max_tri_size * 0.8f) && t_divided[t_parent[idx]] == 1)
+    {
+        t_to_merge_mask[t_parent[idx]] = 1;
+    }
 }

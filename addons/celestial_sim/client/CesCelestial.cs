@@ -756,7 +756,6 @@ public partial class CesCelestial : Node3D
             CallDeferred(nameof(UpdateCollider), concavePolygonShape3D);
         }
 
-        GD.Print("Manual division/undivision applied");
     }
 
     /// <summary>
@@ -779,6 +778,8 @@ public partial class CesCelestial : Node3D
         {
             if (value >= 0)
             {
+                GD.Print($"Dividing triangle {value} in debug mode");
+
                 // Positive index: divide triangle
                 MarkTriangleToDivide(value);
                 ApplyManualDivisions();
@@ -788,6 +789,7 @@ public partial class CesCelestial : Node3D
             {
                 // Negative index: merge triangle
                 int triangleIndex = -value;
+                GD.Print($"Merging triangle {triangleIndex} in debug mode");
 
                 // Check if triangle is divided before trying to merge
                 var triangleInfo = GetTriangleInfo(triangleIndex);
@@ -804,10 +806,8 @@ public partial class CesCelestial : Node3D
             }
         }
 
-        if (dividedCount > 0)
-            GD.Print($"Auto-divided {dividedCount} triangle(s) in debug mode");
-        if (mergedCount > 0)
-            GD.Print($"Auto-merged {mergedCount} triangle(s) in debug mode (removed {mergedCount * 4} child triangles)");
+
+        GD.Print("Manual division/undivision applied");
     }
 
     /// <summary>
