@@ -1,18 +1,16 @@
-# Godot 4+ specific ignores
 .godot/
 .vscode/settings.json
 builds/
 .idea/
-snapshots/
-debug/
+/debug/
 *.import
 export_presets.cfg
 todos/
 CelestialSim.sln.DotSettings.user
-addons/godot_slang_importer/
+/addons/godot_slang_importer/
 
 # docfx output -- this will be built manually
-docs/.mkdocs_mdx_cache/
-docs/site/
-docs/docfx/
-docs/_site/
+/docs/.mkdocs_mdx_cache/
+/docs/site/
+/docs/docfx/
+/docs/_site/

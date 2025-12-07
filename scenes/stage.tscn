@@ -1,9 +1,9 @@
 [gd_scene load_steps=6 format=3 uid="uid://bbh4ytrnsmfye"]
 
-[ext_resource type="Script" uid="uid://q3qokqrkped4" path="res://addons/celestial_sim/client/CesCelestial.cs" id="1_6c5u0"]
-[ext_resource type="Script" uid="uid://b42x2bfhil7p0" path="res://addons/celestial_sim/client/Layers/CesNormalizePos.cs" id="2_vcsse"]
-[ext_resource type="Script" uid="uid://cyyn2g4fhqw00" path="res://addons/celestial_sim/client/Sims/ShowLevelSimLayer.cs" id="3_2so7o"]
-[ext_resource type="Script" uid="uid://cxj5gw0dgvkyj" path="res://addons/celestial_sim/client/CesEditorTimer.cs" id="4_st0q7"]
+[ext_resource type="Script" uid="uid://m3clapi0kjt1" path="res://addons/celestial_sim/scripts/api/CesCelestial.cs" id="1_6c5u0"]
+[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/assets/shaders/show_level.gdshader" id="2_6c5u0"]
+[ext_resource type="Script" uid="uid://chlnjjndmb1yn" path="res://addons/celestial_sim/scripts/lod/layers/CesSphereTerrain.cs" id="2_vcsse"]
+[ext_resource type="Script" uid="uid://bcs6mn1ss7p8h" path="res://addons/celestial_sim/scripts/editor/CesEditorTimer.cs" id="4_st0q7"]
 
 [sub_resource type="ConcavePolygonShape3D" id="ConcavePolygonShape3D_6c5u0"]
 data = PackedVector3Array(-0.5257, 0, 0.85069996, 0, 0.85069996, 0.5257, 0.5257, 0, 0.85069996, -0.5257, 0, 0.85069996, -0.85069996, 0.5257, 0, 0, 0.85069996, 0.5257, -0.85069996, 0.5257, 0, 0, 0.85069996, -0.5257, 0, 0.85069996, 0.5257, 0, 0.85069996, 0.5257, 0, 0.85069996, -0.5257, 0.85069996, 0.5257, 0, 0, 0.85069996, 0.5257, 0.85069996, 0.5257, 0, 0.5257, 0, 0.85069996, 0.85069996, 0.5257, 0, 0.85069996, -0.5257, 0, 0.5257, 0, 0.85069996, 0.85069996, 0.5257, 0, 0.5257, 0, -0.85069996, 0.85069996, -0.5257, 0, 0, 0.85069996, -0.5257, 0.5257, 0, -0.85069996, 0.85069996, 0.5257, 0, 0, 0.85069996, -0.5257, -0.5257, 0, -0.85069996, 0.5257, 0, -0.85069996, -0.5257, 0, -0.85069996, 0, -0.85069996, -0.5257, 0.5257, 0, -0.85069996, 0, -0.85069996, -0.5257, 0.85069996, -0.5257, 0, 0.5257, 0, -0.85069996, 0, -0.85069996, -0.5257, 0, -0.85069996, 0.5257, 0.85069996, -0.5257, 0, 0, -0.85069996, -0.5257, -0.85069996, -0.5257, 0, 0, -0.85069996, 0.5257, -0.85069996, -0.5257, 0, -0.5257, 0, 0.85069996, 0, -0.85069996, 0.5257, -0.5257, 0, 0.85069996, 0.5257, 0, 0.85069996, 0, -0.85069996, 0.5257, 0, -0.85069996, 0.5257, 0.5257, 0, 0.85069996, 0.85069996, -0.5257, 0, -0.85069996, 0.5257, 0, -0.5257, 0, 0.85069996, -0.85069996, -0.5257, 0, -0.85069996, 0.5257, 0, -0.85069996, -0.5257, 0, -0.5257, 0, -0.85069996, -0.85069996, 0.5257, 0, -0.5257, 0, -0.85069996, 0, 0.85069996, -0.5257, 0, -0.85069996, -0.5257, -0.5257, 0, -0.85069996, -0.85069996, -0.5257, 0)
@@ -13,22 +13,20 @@ backface_collision = true
 script = ExtResource("1_6c5u0")
 GameplayCamera = NodePath("Camera3D")
 UseEditorCamera = true
+Shader = ExtResource("2_6c5u0")
 PreciseNormals = false
-Subdivisions = 1
+Subdivisions = 0
 TriangleScreenSize = 0.01
 GenerateCollision = true
 
-[node name="Trees" type="Node3D" parent="."]
+[node name="NormalizePos" type="Node3D" parent="."]
+script = ExtResource("2_vcsse")
 
 [node name="Layers" type="Node3D" parent="."]
 
-[node name="NormalizePos" type="Node3D" parent="Layers"]
+[node name="CesSphereTerrainLayer" type="Node3D" parent="Layers"]
 script = ExtResource("2_vcsse")
-
-[node name="SimLayers" type="Node3D" parent="."]
-
-[node name="ShowLevelSim" type="Node3D" parent="SimLayers"]
-script = ExtResource("3_2so7o")
+metadata/_custom_type_script = "uid://chlnjjndmb1yn"
 
 [node name="StaticBody3D" type="StaticBody3D" parent="."]
 
