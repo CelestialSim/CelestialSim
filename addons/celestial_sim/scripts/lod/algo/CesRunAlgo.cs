@@ -54,7 +54,6 @@ public class CesRunAlgo
         // for each subdivision, get the output and use it as input
         CesDivLOD cesDivLOD = new(State.rd);
         CesMergeLOD cesMergeLOD = new(State.rd);
-        CesEnforceDivisionConstraints constraintShader = new(State.rd);
         CesMarkTrisToDivide divCheckShader = new(State.rd);
 
         uint nTrisAdded = 0;
@@ -70,9 +69,6 @@ public class CesRunAlgo
                 divCheckShader.FlagLargeTrisToDivide(State, camlocal, gen.Subdivisions, gen.Radius, gen.TriangleScreenSize);
             }
 
-            // Validate constraints before attempting division (always run before MakeDiv)
-            // constraintShader.ValidateDivisionConstraints(State, gen.Subdivisions);
-
             nTrisAdded = cesDivLOD.MakeDiv(State, gen.PreciseNormals, cache);
             if (nTrisAdded > 0)
             {
@@ -85,6 +81,8 @@ public class CesRunAlgo
             {
                 GD.Print($"Merged {nTrisMerged / 4} triangle(s) (removed {nTrisMerged} child triangles)");
             }
+
+            //TODO: Generate neighs before getting final output state
 
 
             // ------ Layers update --------       
