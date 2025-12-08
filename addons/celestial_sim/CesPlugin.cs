@@ -7,18 +7,18 @@ public partial class CesPlugin : EditorPlugin
     public override void _EnterTree()
     {
         // Initialization of the plugin goes here.
-        var celestialScript = GD.Load<Script>("res://addons/celestial_sim/client/CesCelestial.cs");
-        var normalizeLayerScript = GD.Load<Script>("res://addons/celestial_sim/client/Layers/CesNormalizePos.cs");
+        var celestialScript = GD.Load<Script>("res://addons/celestial_sim/scripts/api/CesCelestial.cs");
+        var sphereTerrainScript = GD.Load<Script>("res://addons/celestial_sim/scripts/lod/layers/CesSphereTerrain.cs");
         var icon = GD.Load<Texture2D>("res://addons/celestial_sim/Assets/icon.png");
-        AddCustomType("Celestial", "Node3D", celestialScript, icon);
-        AddCustomType("NormalizePosLayer", "Node3D", normalizeLayerScript, icon);
+        AddCustomType("CesCelestial", "Node3D", celestialScript, icon);
+        AddCustomType("CesSphereTerrainLayer", "Node3D", sphereTerrainScript, icon);
     }
 
     public override void _ExitTree()
     {
         // Clean-up of the plugin goes here.
-        RemoveCustomType("Celestial");
-        RemoveCustomType("NormalizePosLayer");
+        RemoveCustomType("CesCelestial");
+        RemoveCustomType("CesSphereTerrainLayer");
     }
 }
 #endif

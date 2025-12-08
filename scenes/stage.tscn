@@ -1,39 +1,49 @@
-[gd_scene load_steps=6 format=3 uid="uid://b1re7jwoyrcf0"]
+[gd_scene load_steps=6 format=3 uid="uid://bbh4ytrnsmfye"]
 
-[ext_resource type="Script" uid="uid://m3clapi0kjt1" path="res://addons/celestial_sim/scripts/api/CesCelestial.cs" id="1_jqklc"]
-[ext_resource type="Script" uid="uid://chlnjjndmb1yn" path="res://addons/celestial_sim/scripts/lod/layers/CesSphereTerrain.cs" id="2_f8c0l"]
-[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/assets/shaders/show_level.gdshader" id="2_jrcpe"]
-[ext_resource type="Script" uid="uid://bcs6mn1ss7p8h" path="res://addons/celestial_sim/scripts/editor/CesEditorTimer.cs" id="2_o78pm"]
+[ext_resource type="Script" uid="uid://m3clapi0kjt1" path="res://addons/celestial_sim/scripts/api/CesCelestial.cs" id="1_6c5u0"]
+[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/assets/shaders/show_level.gdshader" id="2_6c5u0"]
+[ext_resource type="Script" uid="uid://chlnjjndmb1yn" path="res://addons/celestial_sim/scripts/lod/layers/CesSphereTerrain.cs" id="2_vcsse"]
+[ext_resource type="Script" uid="uid://bcs6mn1ss7p8h" path="res://addons/celestial_sim/scripts/editor/CesEditorTimer.cs" id="4_st0q7"]
 
-[sub_resource type="ConcavePolygonShape3D" id="ConcavePolygonShape3D_jrcpe"]
+[sub_resource type="ConcavePolygonShape3D" id="ConcavePolygonShape3D_6c5u0"]
 data = PackedVector3Array(-0.5257, 0, 0.85069996, 0, 0.85069996, 0.5257, 0.5257, 0, 0.85069996, -0.5257, 0, 0.85069996, -0.85069996, 0.5257, 0, 0, 0.85069996, 0.5257, -0.85069996, 0.5257, 0, 0, 0.85069996, -0.5257, 0, 0.85069996, 0.5257, 0, 0.85069996, 0.5257, 0, 0.85069996, -0.5257, 0.85069996, 0.5257, 0, 0, 0.85069996, 0.5257, 0.85069996, 0.5257, 0, 0.5257, 0, 0.85069996, 0.85069996, 0.5257, 0, 0.85069996, -0.5257, 0, 0.5257, 0, 0.85069996, 0.85069996, 0.5257, 0, 0.5257, 0, -0.85069996, 0.85069996, -0.5257, 0, 0, 0.85069996, -0.5257, 0.5257, 0, -0.85069996, 0.85069996, 0.5257, 0, 0, 0.85069996, -0.5257, -0.5257, 0, -0.85069996, 0.5257, 0, -0.85069996, -0.5257, 0, -0.85069996, 0, -0.85069996, -0.5257, 0.5257, 0, -0.85069996, 0, -0.85069996, -0.5257, 0.85069996, -0.5257, 0, 0.5257, 0, -0.85069996, 0, -0.85069996, -0.5257, 0, -0.85069996, 0.5257, 0.85069996, -0.5257, 0, 0, -0.85069996, -0.5257, -0.85069996, -0.5257, 0, 0, -0.85069996, 0.5257, -0.85069996, -0.5257, 0, -0.5257, 0, 0.85069996, 0, -0.85069996, 0.5257, -0.5257, 0, 0.85069996, 0.5257, 0, 0.85069996, 0, -0.85069996, 0.5257, 0, -0.85069996, 0.5257, 0.5257, 0, 0.85069996, 0.85069996, -0.5257, 0, -0.85069996, 0.5257, 0, -0.5257, 0, 0.85069996, -0.85069996, -0.5257, 0, -0.85069996, 0.5257, 0, -0.85069996, -0.5257, 0, -0.5257, 0, -0.85069996, -0.85069996, 0.5257, 0, -0.5257, 0, -0.85069996, 0, 0.85069996, -0.5257, 0, -0.85069996, -0.5257, -0.5257, 0, -0.85069996, -0.85069996, -0.5257, 0)
 backface_collision = true
 
-[node name="Celestial" type="Node3D"]
-script = ExtResource("1_jqklc")
+[node name="Celestial" type="Node3D" node_paths=PackedStringArray("GameplayCamera")]
+script = ExtResource("1_6c5u0")
+GameplayCamera = NodePath("Camera3D")
 UseEditorCamera = true
-Shader = ExtResource("2_jrcpe")
+Shader = ExtResource("2_6c5u0")
 PreciseNormals = false
+Subdivisions = 0
+TriangleScreenSize = 0.01
 GenerateCollision = true
+
+[node name="NormalizePos" type="Node3D" parent="."]
+script = ExtResource("2_vcsse")
 
 [node name="Layers" type="Node3D" parent="."]
 
-[node name="NormalizePos" type="Node3D" parent="Layers"]
-script = ExtResource("2_f8c0l")
+[node name="CesSphereTerrainLayer" type="Node3D" parent="Layers"]
+script = ExtResource("2_vcsse")
+metadata/_custom_type_script = "uid://chlnjjndmb1yn"
 
 [node name="StaticBody3D" type="StaticBody3D" parent="."]
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D"]
-shape = SubResource("ConcavePolygonShape3D_jrcpe")
+shape = SubResource("ConcavePolygonShape3D_6c5u0")
 
 [node name="RebuildTimer" type="Timer" parent="."]
 wait_time = 0.1
 autostart = true
-script = ExtResource("2_o78pm")
+script = ExtResource("4_st0q7")
 RunInEditor = true
 
 [node name="SimTimer" type="Timer" parent="."]
 wait_time = 0.1
 autostart = true
-script = ExtResource("2_o78pm")
+script = ExtResource("4_st0q7")
 RunInEditor = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 1.9105587, 0, 0)
