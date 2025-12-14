@@ -4,7 +4,6 @@ using Godot;
 
 public class CesRunAlgo
 {
-    private readonly BuffersCache cache = new();
 
     // public BufferCleaner bufferCleaner = new();
     public CesCelestial gen;
@@ -69,7 +68,7 @@ public class CesRunAlgo
                 divCheckShader.FlagLargeTrisToDivide(State, camlocal, gen.Subdivisions, gen.Radius, gen.TriangleScreenSize);
             }
 
-            nTrisAdded = cesDivLOD.MakeDiv(State, gen.PreciseNormals, cache);
+            nTrisAdded = cesDivLOD.MakeDiv(State, gen.PreciseNormals);
             if (nTrisAdded > 0)
             {
                 GD.Print($"Divided {nTrisAdded / 4} triangles");
@@ -80,6 +79,14 @@ public class CesRunAlgo
             if (nTrisMerged > 0)
             {
                 GD.Print($"Merged {nTrisMerged / 4} triangle(s) (removed {nTrisMerged} child triangles)");
+            }
+
+            // TODO: make this more dynamic based on memory and planet size
+            if (State.nDeactivatedTris > 100000)
+            {
+                GD.Print($"Removing free space inside buffers");
+                CesCompactBuffers compactor = new(State.rd);
+                compactor.Compact(State);
             }
 
             //TODO: Generate neighs before getting final output state
@@ -93,7 +100,7 @@ public class CesRunAlgo
         }
 
         // Retriving output
-        var finalOutput = CesFinalState.CreateFinalOutput(State, gen.LowPolyLook, cache);
+        var finalOutput = CesFinalState.CreateFinalOutput(State, gen.LowPolyLook);
         Pos = finalOutput.pos;
         Norm = finalOutput.normals;
         Triangles = finalOutput.tris;
@@ -114,56 +121,3 @@ public class CesRunAlgo
     //     Dispose();
     // }
 }
-
-public class BuffersCache
-{
-    public Dictionary<string, BufferInfo> cache = new();
-    public RenderingDevice rd;
-
-    public BufferInfo GetOrCreateBuffer(RenderingDevice rd, string name, uint size, Span<byte> data = default)
-    {
-        this.rd ??= rd;
-
-        BufferInfo buf = new();
-        var bufferInCache = cache.ContainsKey(name);
-        var badBufferDimentions = false;
-        if (bufferInCache)
-        {
-            var value = cache[name];
-            badBufferDimentions = size > value.maxSize || size < value.maxSize / 2;
-            // && value.maxSize <= size * 10  // if the cached buffer is too big it will impact performance negatively due to transfer time
-            if (!badBufferDimentions)
-            {
-                // var offset = size;
-                // var clearBytes = value.maxSize - size;
-                var updatedLenBuffer = new BufferInfo(value.buffer, size, value.maxSize, rd);
-                cache[name] = updatedLenBuffer;
-                buf = updatedLenBuffer;
-            }
-        }
-
-        if (badBufferDimentions)
-        {
-            // free the old buffer
-            var done = new System.Threading.ManualResetEventSlim(false);
-            RenderingServer.CallOnRenderThread(Callable.From(() =>
-            {
-                rd.FreeRid(cache[name].buffer);
-                done.Set();
-            }));
-            done.Wait();
-        }
-        if (!bufferInCache || badBufferDimentions)
-        {
-            BufferInfo bufferInfo;
-            bufferInfo = data == null ? CesComputeUtils.CreateEmptyStorageBuffer(rd, size) : CesComputeUtils.CreateStorageBuffer(rd, data);
-            // bufferInfo.filledSize = size;
-            cache[name] = bufferInfo;
-            buf = bufferInfo;
-        }
-
-        return buf;
-    }
-}
-
-

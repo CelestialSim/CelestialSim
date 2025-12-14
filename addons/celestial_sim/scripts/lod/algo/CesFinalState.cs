@@ -5,7 +5,7 @@ using Godot;
 
 public class CesFinalState
 {
-    public static FinalOutput CreateFinalOutput(CesState state, bool lowPoly, BuffersCache cache)
+    public static FinalOutput CreateFinalOutput(CesState state, bool lowPoly)
     {
         var rd = state.rd;
         var divMask = state.GetDividedMask();
@@ -25,6 +25,7 @@ public class CesFinalState
 
 
         GD.Print($"Number of invisible (deactivate + parents) triangles: {state.nTris - nVisibleTris}");
+
         var v_pos = state.GetPos();
         // TODO: Implement lowpoly == false
         var norm = new Vector3[(int)(nVisibleTris * 3)];

@@ -106,9 +106,9 @@ public class CesCoreState
             t_to_merge_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, (int)nTris).ToArray()),
             // sim_value = CesComputeUtils.CreateStorageBuffer(rd, simValue),
             // old_state_pointer = CesComputeUtils.CreateStorageBuffer(rd, oldStatePointer()),
-            startIdx = 0,
             nTris = nTris,
-            nVerts = nVerts
+            nVerts = nVerts,
+            nDeactivatedTris = 0
         };
 
         return cs;

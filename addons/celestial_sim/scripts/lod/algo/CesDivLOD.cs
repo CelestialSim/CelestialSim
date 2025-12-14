@@ -161,7 +161,7 @@ public class CesDivLOD
         return tabc;
     }
 
-    public uint MakeDiv(CesState state, bool preciseNormals, BuffersCache cache)
+    public uint MakeDiv(CesState state, bool preciseNormals)
     {
         var removeRepeatedVerts = preciseNormals ? 1u : 0u;
         // Increase size variables
@@ -187,9 +187,6 @@ public class CesDivLOD
         {
             return 0;
         }
-
-        var startIdx = state.startIdx;
-        state.startIdx = state.nTris;
 
         var indicesToDivBuffer = CesComputeUtils.CreateStorageBuffer(_rd, indicesToDiv.ToArray());
 

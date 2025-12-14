@@ -10,6 +10,8 @@ public class CesState
 
     public uint nVerts;
 
+    public uint nDeactivatedTris;
+
     // public Rid old_state_pointer;
     public RenderingDevice rd;
     public uint startIdx; // The first triangle that needs to be updated
@@ -114,25 +116,6 @@ public class CesState
 
         return indices;
     }
-
-    public (BufferInfo, BufferInfo, uint) GetAddedVerticesPosAndId(int[] indices, BuffersCache cache)
-    {
-        var idxLen = (uint)indices.Length;
-        var pos = CesComputeUtils.ConvertBufferToArray<Vector4>(rd, v_pos);
-
-        var filteredPos = new Vector4[idxLen];
-        for (var i = 0; i < idxLen; i++) filteredPos[i] = pos[indices[i]];
-
-        var filteredPosBytes = MemoryMarshal.AsBytes(filteredPos.AsSpan());
-        var indexBytes = MemoryMarshal.AsBytes(indices.AsSpan());
-
-        // GD.Print("unrolledFilteredPos len: " + unrolledFilteredPos.Length);
-        var posBuffer = cache.GetOrCreateBuffer(rd, "layerPosBuffer", (uint)filteredPosBytes.Length, filteredPosBytes);
-        var idxBuffer = cache.GetOrCreateBuffer(rd, "layerIdxBuffer", (uint)indexBytes.Length, indexBytes);
-
-        return (posBuffer, idxBuffer, idxLen);
-    }
-
     public Vector3[] GetPos()
     {
         return CesComputeUtils.ConvertV4BufferToVector3Array(rd, v_pos);
