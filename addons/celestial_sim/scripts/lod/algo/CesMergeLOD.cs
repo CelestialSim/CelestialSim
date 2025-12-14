@@ -58,8 +58,9 @@ public class CesMergeLOD
         };
 
         CesComputeUtils.DispatchShader(_rd, mergeTrisPath, bufferInfosRemove, (uint)n_tris_to_merge);
-        // var trisOutput = CesComputeUtils.ConvertBufferToArray<float>(_rd, trisOutputBuffer);
-        var deactivated1 = state.GetTDeactivatedMask().ToArray();
+
+        state.nDeactivatedTris += (uint)n_tris_to_merge;
+
         return (uint)n_tris_to_merge;
     }
 }

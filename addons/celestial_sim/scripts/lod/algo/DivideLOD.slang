@@ -65,8 +65,6 @@ RWStructuredBuffer<int> t_lv;
 [[vk::binding(20, 0)]]
 RWStructuredBuffer<uint> indicesToDiv;
 
-[[vk::binding(21, 0)]]
-StructuredBuffer<float> tris_out;
 
 enum Edge
 {

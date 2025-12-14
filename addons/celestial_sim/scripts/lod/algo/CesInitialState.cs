@@ -6,8 +6,8 @@ public class CesCoreState
 {
     public static CesState CreateCoreState(RenderingDevice rd)
     {
-        var nTris = 20;
-        var nVerts = 12;
+        uint nTris = 20;
+        uint nVerts = 12;
         float[,] vPos =
         {
             { -0.5257f, 0.0000f, 0.8507f, 0.0f },
@@ -76,11 +76,9 @@ public class CesCoreState
         var tBT = new int[nTris];
         var tCT = new int[nTris];
         var tCenterT = new int[nTris];
-        var tParent = Repeat(-1, nTris).ToArray(); // -1 indicates no parent (root triangles)
+        var tParent = Repeat(-1, (int)nTris).ToArray(); // -1 indicates no parent (root triangles)
 
-        var trisIdx = Range(0, nTris).ToArray();
-
-        var simValue = new float[nTris];
+        var trisIdx = Range(0, (int)nTris).ToArray();
 
         // Create CesState
         var cs = new CesState(rd)
@@ -90,8 +88,8 @@ public class CesCoreState
             t_abc = CesComputeUtils.CreateStorageBuffer(rd, tAbc),
             // t_norm = ComputeUtils.CreateStorageBuffer(rd, t_norm),
             t_lv = CesComputeUtils.CreateStorageBuffer(rd, tLv),
-            t_divided = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
-            t_deactivated = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
+            t_divided = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, (int)nTris).ToArray()),
+            t_deactivated = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, (int)nTris).ToArray()),
             t_neight_ab = CesComputeUtils.CreateStorageBuffer(rd, tNeightAb),
             t_neight_bc = CesComputeUtils.CreateStorageBuffer(rd, tNeightBc),
             t_neight_ca = CesComputeUtils.CreateStorageBuffer(rd, tNeightCa),
@@ -103,14 +101,14 @@ public class CesCoreState
             t_center_t = CesComputeUtils.CreateStorageBuffer(rd, tCenterT),
             t_parent = CesComputeUtils.CreateStorageBuffer(rd, tParent),
             // t_parent_t = CesComputeUtils.CreateStorageBuffer(rd, tParentT),
-            v_update_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(1, nVerts).ToArray()),
-            t_to_divide_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
-            t_to_merge_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, nTris).ToArray()),
+            v_update_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(1, (int)nVerts).ToArray()),
+            t_to_divide_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, (int)nTris).ToArray()),
+            t_to_merge_mask = CesComputeUtils.CreateStorageBuffer(rd, Repeat(0, (int)nTris).ToArray()),
             // sim_value = CesComputeUtils.CreateStorageBuffer(rd, simValue),
             // old_state_pointer = CesComputeUtils.CreateStorageBuffer(rd, oldStatePointer()),
-            startIdx = 0,
-            nTris = (uint)nTris,
-            nVerts = (uint)nVerts
+            nTris = nTris,
+            nVerts = nVerts,
+            nDeactivatedTris = 0
         };
 
         return cs;
