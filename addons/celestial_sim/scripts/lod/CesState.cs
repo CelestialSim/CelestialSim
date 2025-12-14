@@ -46,7 +46,6 @@ public class CesState
         this.rd = rd;
     }
 
-
     public Rid[] allBuffers()
     {
         return
@@ -67,7 +66,7 @@ public class CesState
             t_to_divide_mask.buffer,
             t_to_merge_mask.buffer,
             v_pos.buffer,
-            v_update_mask.buffer
+            v_update_mask.buffer,
         ];
     }
 
@@ -78,7 +77,7 @@ public class CesState
             RenderingServer.CallOnRenderThread(Callable.From(() => rd.FreeRid(buffer)));
         }
     }
-    
+
     // Returns to indices of triangles that can possibly be divided
     public Span<int> GetTToDivideMask()
     {
@@ -229,6 +228,94 @@ public class CesState
         public int b;
         public int c;
         public int w;
+    }
+
+}
+
+
+public class BufferInfo
+{
+    public Rid buffer;
+    public uint maxSize;
+    public uint filledSize;
+
+    public RenderingDevice.UniformType bufferType;
+    private readonly RenderingDevice rd;
+
+    public BufferInfo()
+    {
+        rd = default!;
+    }
+
+    public BufferInfo(Rid buffer, uint filledSize, uint maxSize, RenderingDevice rd)
+    {
+        this.buffer = buffer;
+        this.maxSize = maxSize;
+        this.filledSize = filledSize;
+        bufferType = RenderingDevice.UniformType.StorageBuffer;
+        this.rd = rd;
+    }
+
+    public BufferInfo(Rid buffer, RenderingDevice rd)
+    {
+        this.buffer = buffer;
+        bufferType = RenderingDevice.UniformType.UniformBuffer;
+        this.rd = rd;
+    }
+
+    internal RenderingDevice RenderingDevice => rd;
+
+    public RDUniform GetUniformWithBinding(int binding)
+    {
+        var uniform = new RDUniform
+        {
+            UniformType = bufferType,
+            Binding = binding
+        };
+        uniform.AddId(buffer);
+        return uniform;
+    }
+
+
+    /// <summary>
+    /// Extends the buffer by adding the specified number of bytes to its size.
+    /// If the current max size can accommodate the extension, only the filledSize is updated.
+    /// Otherwise, a new larger buffer is allocated, data is copied, and the old buffer is freed.
+    /// </summary>
+    /// <param name="bytesToExtend">The number of bytes to add to the buffer's filled size.</param>
+    public virtual void ExtendBuffer(uint bytesToExtend)
+    {
+        var desiredSize = filledSize + bytesToExtend;
+
+        if (maxSize >= desiredSize
+            && maxSize <= desiredSize * 2
+           ) // if the cached buffer is too big it will impact performance negatively due to transfer time
+        {
+            // Reuse existing buffer, just update the filled size
+            filledSize = desiredSize;
+            return;
+        }
+
+        // Need to allocate a new larger buffer
+        var newBuffer = CesComputeUtils.CreateEmptyStorageBuffer(rd, desiredSize);
+        if (buffer.Equals(default)) throw new Exception("Source buffer not valid when extending buffer.");
+
+        // Copy instance members to local variables for lambda capture
+        var oldBuffer = buffer;
+        var oldFilledSize = filledSize;
+        var renderingDevice = rd;
+
+        RenderingServer.CallOnRenderThread(
+            Callable.From(() => renderingDevice.BufferCopy(oldBuffer, newBuffer.buffer, 0, 0, oldFilledSize))
+        );
+
+        // Free the old buffer
+        RenderingServer.CallOnRenderThread(Callable.From(() => renderingDevice.FreeRid(oldBuffer)));
+
+        // Update this instance with the new buffer
+        buffer = newBuffer.buffer;
+        filledSize = newBuffer.filledSize;
+        maxSize = newBuffer.maxSize;
     }
 
 }

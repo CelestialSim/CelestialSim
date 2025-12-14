@@ -222,9 +222,6 @@ public class CesDivLOD
         state.t_center_t.ExtendBuffer(sizeof(int) * nTrisAdded);
         state.t_parent.ExtendBuffer(sizeof(int) * nTrisAdded);
 
-        var trisOutputBuffer = CesComputeUtils.CreateStorageBuffer(_rd, new float[nTrisToDiv]);
-        var toDivMaskArray = state.GetTToDivideMask();
-        var tDivided = state.GetDividedMask();
         //Add temp test buffer
         // var tempBytes = new byte[state.nTris * sizeof(int)];
         // var emptyBuffer = rd.StorageBufferCreate((uint)tempBytes.Length, tempBytes);
@@ -252,8 +249,7 @@ public class CesDivLOD
             state.t_parent,
             CesComputeUtils.CreateUniformBuffer(_rd, removeRepeatedVerts),
             state.t_lv,
-            indicesToDivBuffer,
-            trisOutputBuffer
+            indicesToDivBuffer
         };
 
         // Dispatch compute shader
@@ -262,18 +258,6 @@ public class CesDivLOD
         // happens after 4 divisions
 
         CesComputeUtils.DispatchShader(_rd, addTrisPath, bufferInfos, (uint)nTrisToDiv);
-        var trisOutput = CesComputeUtils.ConvertBufferToArray<float>(_rd, trisOutputBuffer);
-        var toDivMaskArray1 = state.GetTToDivideMask();
-        var tDivided1 = state.GetDividedMask();
-        var vToUpdate = CesComputeUtils.ConvertBufferToArray<int>(_rd, state.v_update_mask);
-        // var vPos = state.GetPos();
-        // for (var i = 0; i < vToUpdate.Length; i++)
-        // {
-        //     if (vToUpdate[i] != 0)
-        //     {
-        //         CesShaderDebugUtils.SpawnDebugSphere(10f, 0.1f, Colors.Red, vPos[i]);
-        //     }
-        // }
         return nTrisAdded;
     }
 }
