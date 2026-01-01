@@ -172,7 +172,7 @@ public class CesDebugUtils
 
         var state = celestial.graphGenerator.State;
 
-        var shaderPath = "res://addons/celestial_sim/scripts/lod/utils/MarkTriangleToDivide.slang";
+        var shaderPath = "res://addons/celestial_sim/scripts/debug/MarkTriangleToDivide.slang";
 
         var bufferInfos = new BufferInfo[]
         {
@@ -200,8 +200,8 @@ public class CesDebugUtils
         }
 
         var state = celestial.graphGenerator.State;
+        var shaderPath = "res://addons/celestial_sim/scripts/debug/MarkTriangleToMerge.slang";
 
-        var shaderPath = "res://addons/celestial_sim/scripts/lod/utils/MarkTriangleToMerge.slang";
 
         var bufferInfos = new BufferInfo[]
         {

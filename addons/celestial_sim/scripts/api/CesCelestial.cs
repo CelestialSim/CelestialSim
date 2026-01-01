@@ -228,7 +228,7 @@ public partial class CesCelestial : Node3D
                 var (origin, direction) = ray.Value;
 
                 // Check for triangle intersection
-                var hit = CesDebugUtils.CheckRayTriangleIntersection(this,origin, direction);
+                var hit = CesDebugUtils.CheckRayTriangleIntersection(this, origin, direction);
                 if (hit.HasValue)
                 {
                     var (triangleIndex, distance) = hit.Value;
@@ -242,7 +242,7 @@ public partial class CesCelestial : Node3D
                         _ctrlOriginalLevel = triangleInfo.Value.Level;
 
                         // Increase level by 6
-                        CesDebugUtils.SetTriangleLevel(this,triangleIndex, _ctrlOriginalLevel + 6);
+                        CesDebugUtils.SetTriangleLevel(this, triangleIndex, _ctrlOriginalLevel + 6);
 
                         // Print triangle info
                         GD.Print($"\n=== Triangle {triangleIndex} Information ===");
@@ -308,7 +308,7 @@ public partial class CesCelestial : Node3D
                             if (parentInfo.HasValue && parentInfo.Value.IsDivided == 1)
                             {
                                 // Mark the parent triangle for merging
-                                CesDebugUtils.DebugMarkTriangleToMerge(this,parentIndex);
+                                CesDebugUtils.DebugMarkTriangleToMerge(this, parentIndex);
 
                                 // Apply the merge immediately
                                 CesDebugUtils.ApplyDebugDivisions(this);
@@ -437,12 +437,17 @@ public partial class CesCelestial : Node3D
             if (_pendingDebugDivisions)
             {
                 _pendingDebugDivisions = false;
-                CallDeferred(nameof(CesDebugUtils.ApplyDebugDivisions));
+                CallDeferred(nameof(ApplyDebugDivisions));
             }
 
             if (ShowDebugMessages)
                 GD.Print($"Completed in {sw.ElapsedMilliseconds} ms");
         });
+    }
+
+    public void ApplyDebugDivisions()
+    {
+        CesDebugUtils.ApplyDebugDivisions(this);
     }
 
     private void UpdateCollider(ConcavePolygonShape3D pol)
@@ -591,7 +596,7 @@ public partial class CesCelestial : Node3D
 
     [ExportCategory("Look and feel")] //
     [Export]
-    public Shader Shader = GD.Load<Shader>("res://addons/celestial_sim/Assets/Shaders/show_level.gdshader");
+    public Shader Shader = GD.Load<Shader>("res://addons/celestial_sim/assets/shaders/show_level.gdshader");
 
 
     [Export]
