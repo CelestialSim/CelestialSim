@@ -41,13 +41,5 @@ public class CesMarkTrisToDivide
         var xGroups = cesState.nTris;
         CesComputeUtils.DispatchShader(rd, shaderPath, bufferInfos, xGroups);
 
-        var toDivideMask = cesState.GetTToDivideMask();
-        var divMask = cesState.GetDividedMask();
-        var trisSizes = CesComputeUtils.ConvertBufferToArray<float>(rd, trisSizeBuffer);
-        // GD.Print("Triangle Sizes:");
-        // for (var i = 0; i < cesState.nTris; i++)
-        // {
-        //     GD.Print($"Tri {i}: Output {trisSizes[i]:F2}, ToDivide: {toDivideMask[i]}, Divided: {divMask[i]}");
-        // }
     }
 }

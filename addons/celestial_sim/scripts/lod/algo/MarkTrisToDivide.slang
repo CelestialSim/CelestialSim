@@ -56,15 +56,74 @@ static const float fov = 75.0f;         // Field of view in degrees
 static const float near_plane = 0.05f;  // Near clipping plane in meters
 static const float far_plane = 4000.0f; // Far clipping plane in meters
 
-// Calculate screen-space area of a triangle
+
+// Calculate screen-space area of a triangle based on level and distance
+// This is a simplified approximation that avoids full vertex projection
+float calculateScreenAreaSimplified(int triIdx)
+{
+    var abc = t_abc[triIdx];
+    // Get vertices of tris
+    var v_a = v_pos[abc.x];
+    var v_b = v_pos[abc.y];
+    var v_c = v_pos[abc.z];
+    // Get center of tris position
+    var v_center = (v_a + v_b + v_c) / 3;
+    // Get distance from center to camera
+    var dist_from_camera = length(v_center - camera_pos);
+    // Tris screen size
+    var screen_size = radius / (
+            pow(4, t_lv[triIdx]) * dist_from_camera
+        );
+    return screen_size;
+}
+
+// Calculate screen-space area of a triangle based on level and distance
+// This is a simplified approximation that avoids full vertex projection
 float calculateScreenArea(int triIdx)
+{
+    // Get triangle level
+    uint level = t_lv[triIdx];
+
+    // Get triangle center by averaging vertices
+    var abc = t_abc[triIdx];
+    var v_a = v_pos[abc.x];
+    var v_b = v_pos[abc.y];
+    var v_c = v_pos[abc.z];
+    var center = (v_a + v_b + v_c) / 3.0f;
+
+    // Distance from camera to triangle center
+    float dist = length(center - camera_pos);
+
+    // Base triangle size for an icosphere (20 triangles on a sphere)
+    // Area of triangle on unit sphere: 4*pi / 20 ≈ 0.628
+    float baseArea = 0.628f * radius * radius;
+
+    // Each subdivision divides a triangle into 4 smaller triangles
+    // So area reduces by factor of 4 per level
+    float triangleArea = baseArea / pow(4.0f, float(level));
+
+    // Calculate perspective projection parameters
+    float fov_rad = fov * float.getPi() / 180.0f;
+    float tan_half_fov = tan(fov_rad * 0.5f);
+
+    // Project triangle area to screen space
+    // Screen space scaling factor: 1 / (distance * tan(fov/2))^2
+    float screenScale = 1.0f / (dist * tan_half_fov);
+    float screenArea = triangleArea * screenScale * screenScale;
+
+    return screenArea;
+}
+
+
+// Calculate screen-space area of a triangle
+float calculateScreenAreaComplex(int triIdx)
 {
     var abc = t_abc[triIdx];
 
     // Get vertices of triangle
-    var v_a = v_pos[abc.x] * radius;
-    var v_b = v_pos[abc.y] * radius;
-    var v_c = v_pos[abc.z] * radius;
+    var v_a = v_pos[abc.x];
+    var v_b = v_pos[abc.y];
+    var v_c = v_pos[abc.z];
 
     // Convert world positions to camera-relative positions
     var cam_a = v_a - camera_pos;
@@ -93,43 +152,6 @@ float calculateScreenArea(int triIdx)
     return screen_area;
 }
 
-// Calculate screen-space area of a triangle based on level and distance
-// This is a simplified approximation that avoids full vertex projection
-float calculateScreenAreaSimplified(int triIdx)
-{
-    // Get triangle level
-    uint level = t_lv[triIdx];
-
-    // Get triangle center by averaging vertices
-    var abc = t_abc[triIdx];
-    var v_a = v_pos[abc.x] * radius;
-    var v_b = v_pos[abc.y] * radius;
-    var v_c = v_pos[abc.z] * radius;
-    var center = (v_a + v_b + v_c) / 3.0f;
-
-    // Distance from camera to triangle center
-    float dist = length(center - camera_pos);
-
-    // Base triangle size for an icosphere (20 triangles on a sphere)
-    // Area of triangle on unit sphere: 4*pi / 20 ≈ 0.628
-    float baseArea = 0.628f * radius * radius;
-
-    // Each subdivision divides a triangle into 4 smaller triangles
-    // So area reduces by factor of 4 per level
-    float triangleArea = baseArea / pow(4.0f, float(level));
-
-    // Calculate perspective projection parameters
-    float fov_rad = fov * 3.14159265359f / 180.0f;
-    float tan_half_fov = tan(fov_rad * 0.5f);
-
-    // Project triangle area to screen space
-    // Screen space scaling factor: 1 / (distance * tan(fov/2))^2
-    float screenScale = 1.0f / (dist * tan_half_fov);
-    float screenArea = triangleArea * screenScale * screenScale;
-
-    return screenArea;
-}
-
 // Main compute shader function
 [shader("compute")]
 [numthreads(2, 1, 1)]
@@ -155,7 +177,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
         return;
     }
 
-    float screenArea = calculateScreenAreaSimplified(idx);
+    float screenArea = calculateScreenArea(idx);
     if (t_lv[idx] < max_divs)
     {
         // Calculate screen area
@@ -164,7 +186,6 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
         // Check if triangle is large enough to divide
         t_to_div[idx] = screenArea > max_tri_size;
     }
-
     // Check if divided triangle is now too small and should be merged
     // TODO: Use a threshold (e.g., 1/4 of max_tri_size) to avoid thrashing
     // if (t_divided[idx] == 1 && t_to_div[idx] == 0)
@@ -178,7 +199,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
         return;
     }
 
-    float parentScreenArea = calculateScreenAreaSimplified(t_parent[idx]);
+    float parentScreenArea = calculateScreenArea(t_parent[idx]);
 
     // t_divided[idx] == 0 to divide only children
     if (parentScreenArea < (max_tri_size * 0.8f) && t_divided[t_parent[idx]] == 1)
