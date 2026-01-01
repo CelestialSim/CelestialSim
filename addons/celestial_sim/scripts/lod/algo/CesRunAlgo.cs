@@ -54,6 +54,7 @@ public class CesRunAlgo
         CesDivLOD cesDivLOD = new(State.rd);
         CesMergeLOD cesMergeLOD = new(State.rd);
         CesMarkTrisToDivide divCheckShader = new(State.rd);
+        CesUpdateNeighbors updateNeighbors = new(State.rd);
 
         uint nTrisAdded = 0;
         uint nTrisMerged = 0;
@@ -89,8 +90,11 @@ public class CesRunAlgo
                 compactor.Compact(State);
             }
 
-            //TODO: Generate neighs before getting final output state
-
+            // Update neighbors after division/merge
+            if (nTrisAdded > 0 || nTrisMerged > 0)
+            {
+                updateNeighbors.UpdateNeighbors(State);
+            }
 
             // ------ Layers update --------       
             // TODO: Use a different level for each vertex
