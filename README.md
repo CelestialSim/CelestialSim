@@ -14,7 +14,7 @@
 
 ## Development
 
-To compile Slang shaders for development across multiple platforms (Windows, macOS, Linux), use the Slang Godot plugin available at https://github.com/CelestialSim/godot-slang.
+To compile Slang shaders for development across multiple platforms (Windows, macOS, Linux), use the Slang Godot plugin available at https://github.com/DevPrice/godot-slang. Install it from the Godot Asset Library.
 
 # Troubleshooting
 The plugin is not working, what should I do ?
