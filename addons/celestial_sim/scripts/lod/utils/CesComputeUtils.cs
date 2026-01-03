@@ -132,11 +132,12 @@ public class CesComputeUtils
 
     public static Rid LoadShader(RenderingDevice rd, string path)
     {
-        // Load and compile compute shader
-        var shaderFile = GD.Load<RDShaderFile>(path);
-        if (shaderFile == null) throw new Exception("Failed to load shader file.");
+        // Load and compile compute shader. ComputeShaderFile comes from the Slang importer and is not
+        // available as a C# type, so we load it as a generic Resource and call into it dynamically.
+        var shaderResource = GD.Load<Resource>(path);
+        if (shaderResource == null) throw new Exception("Failed to load shader file.");
 
-        var shaderBytecode = shaderFile.GetSpirV();
+        var shaderBytecode = (RDShaderSpirV)shaderResource.Call("get_spirv");
         if (shaderBytecode == null) throw new Exception("Failed to get SPIR-V bytecode from GLSL shader.");
 
         var computeShader = rd.ShaderCreateFromSpirV(shaderBytecode);

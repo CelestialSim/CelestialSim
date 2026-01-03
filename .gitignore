@@ -7,7 +7,7 @@ builds/
 export_presets.cfg
 todos/
 CelestialSim.sln.DotSettings.user
-/addons/godot_slang_importer/
+/addons/shader-slang/
 
 # docfx output -- this will be built manually
 /docs/.mkdocs_mdx_cache/

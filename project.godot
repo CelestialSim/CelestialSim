@@ -20,7 +20,7 @@ project/assembly_name="CelestialSim"
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/celestial_sim/plugin.cfg", "res://addons/godot_slang_importer/plugin.cfg")
+enabled=PackedStringArray("res://addons/celestial_sim/plugin.cfg")
 
 [filesystem]
 
