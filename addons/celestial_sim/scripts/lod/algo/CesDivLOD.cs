@@ -1,13 +1,15 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Godot;
-using Godot.Collections;
 
 
 public class CesDivLOD
 {
     private readonly RenderingDevice _rd;
     private readonly string addTrisPath = "res://addons/celestial_sim/scripts/lod/algo/DivideLOD.slang";
+    private readonly string collectTrisPath = "res://addons/celestial_sim/scripts/lod/algo/CollectTrisToDivide.slang";
+    private const bool VerifyGpuIndexCollection = false;
 
     public CesDivLOD(RenderingDevice rd)
     {
@@ -161,6 +163,83 @@ public class CesDivLOD
         return tabc;
     }
 
+    private static uint[] BuildCpuIndices(CesState state)
+    {
+        var toDivMask = state.GetTToDivideMask();
+        var dividedMask = state.GetDividedMask();
+
+        if (toDivMask.Length != dividedMask.Length)
+            throw new InvalidOperationException("Triangle masks have different lengths.");
+
+        List<uint> indices = new(toDivMask.Length);
+        for (var i = 0; i < toDivMask.Length; i++)
+        {
+            if (toDivMask[i] != 0 && dividedMask[i] == 0)
+            {
+                indices.Add((uint)i);
+            }
+        }
+
+        return indices.ToArray();
+    }
+
+    private static void ValidateIndices(uint[] cpuIndices, uint[] gpuIndices)
+    {
+        if (cpuIndices.Length != gpuIndices.Length)
+        {
+            throw new InvalidOperationException($"GPU divide list mismatch: CPU={cpuIndices.Length}, GPU={gpuIndices.Length}.");
+        }
+
+        var sortedCpu = (uint[])cpuIndices.Clone();
+        var sortedGpu = (uint[])gpuIndices.Clone();
+        Array.Sort(sortedCpu);
+        Array.Sort(sortedGpu);
+
+        for (var i = 0; i < sortedCpu.Length; i++)
+        {
+            if (sortedCpu[i] != sortedGpu[i])
+            {
+                throw new InvalidOperationException($"GPU divide list mismatch at {i}: CPU={sortedCpu[i]}, GPU={sortedGpu[i]}.");
+            }
+        }
+    }
+
+    private BufferInfo BuildIndicesToDivideBuffer(CesState state, bool captureResult, out uint nTrisToDiv,
+        out uint[] gpuSnapshot)
+    {
+        var outputSize = Math.Max(state.t_to_divide_mask.filledSize, (uint)sizeof(uint));
+        // TODO: Move to CesState
+        var indicesBuffer = CesComputeUtils.CreateEmptyStorageBuffer(_rd, outputSize);
+        var counterBuffer = CesComputeUtils.CreateEmptyStorageBuffer(_rd, sizeof(uint));
+
+        var bufferInfos = new BufferInfo[]
+        {
+            state.t_to_divide_mask,
+            state.t_divided,
+            indicesBuffer,
+            counterBuffer,
+            CesComputeUtils.CreateUniformBuffer(_rd, state.nTris)
+        };
+
+        if (state.nTris > 0)
+        {
+            CesComputeUtils.DispatchShader(_rd, collectTrisPath, bufferInfos, state.nTris);
+        }
+
+        var countSpan = CesComputeUtils.ConvertBufferToArray<uint>(_rd, counterBuffer);
+        nTrisToDiv = countSpan.Length > 0 ? Math.Min(countSpan[0], state.nTris) : 0;
+        indicesBuffer.filledSize = nTrisToDiv * sizeof(uint);
+
+        gpuSnapshot = Array.Empty<uint>();
+        if (captureResult && nTrisToDiv > 0)
+        {
+            var gpuSpan = CesComputeUtils.ConvertBufferToArray<uint>(_rd, indicesBuffer);
+            gpuSnapshot = gpuSpan[..(int)nTrisToDiv].ToArray();
+        }
+
+        return indicesBuffer;
+    }
+
     public uint MakeDiv(CesState state, bool preciseNormals)
     {
         var removeRepeatedVerts = preciseNormals ? 1u : 0u;
@@ -168,27 +247,25 @@ public class CesDivLOD
         // var sumArr = CesComputeUtils.SumArrayInPlace(state.GetTToDivideMask());
         // var sumBuffer = CesComputeUtils.CreateStorageBuffer(_rd, sumArr);
         // GD.Print("idxToCheck: " + nTrisToDiv);
-        var toDivMask = state.GetTToDivideMask();
-        var dividedMask = state.GetDividedMask();
-        var indicesToDiv = new Array<uint>();
-        for (uint i = 0; i < toDivMask.Length; i++)
+
+        var verifyIndices = VerifyGpuIndexCollection;
+        var cpuIndices = verifyIndices ? BuildCpuIndices(state) : Array.Empty<uint>();
+
+        var indicesToDivBuffer = BuildIndicesToDivideBuffer(state, verifyIndices, out var nTrisToDiv,
+            out var gpuIndicesSnapshot);
+
+        if (verifyIndices)
         {
-            if (toDivMask[(int)i] != 0 && dividedMask[(int)i] == 0)
-            {
-                indicesToDiv.Add(i);
-            }
+            ValidateIndices(cpuIndices, gpuIndicesSnapshot);
         }
 
-        var nTrisToDiv = indicesToDiv.Count;
-        var nTrisAdded = 4 * (uint)nTrisToDiv;
-        var nVertsAdded = 3 * (uint)nTrisToDiv;
+        var nTrisAdded = 4 * nTrisToDiv;
+        var nVertsAdded = 3 * nTrisToDiv;
 
         if (nTrisAdded == 0)
         {
             return 0;
         }
-
-        var indicesToDivBuffer = CesComputeUtils.CreateStorageBuffer(_rd, indicesToDiv.ToArray());
 
         // Compute new indices
         state.t_abc.ExtendBuffer(4 * sizeof(int) * nTrisAdded);
