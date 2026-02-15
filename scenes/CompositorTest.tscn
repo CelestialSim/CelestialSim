@@ -1,0 +1,36 @@
+[gd_scene format=3 uid="uid://lg5sxncsu0tv"]
+
+[ext_resource type="Script" uid="uid://ivmgddrw0cca" path="res://addons/celestial_sim/scripts/compositor/CesFinalStateCompositor.cs" id="1_yl6e5"]
+
+[sub_resource type="Environment" id="Environment_1"]
+
+[sub_resource type="CompositorEffect" id="CompositorEffect_fkaoq"]
+resource_local_to_scene = false
+resource_name = ""
+enabled = true
+effect_callback_type = 4
+needs_motion_vectors = false
+needs_normal_roughness = false
+script = ExtResource("1_yl6e5")
+TargetPath = NodePath("")
+Radius = 1.028
+LightDirection = Vector3(0.136, -0.175, 1)
+LightIntensity = 1.065
+AmbientStrength = 0.041
+LightColor = Color(0.110055886, 0.081666805, 0.047954768, 1)
+SphereColor = Color(0.092422, 0.21441105, 0.14641726, 1)
+
+[sub_resource type="Compositor" id="Compositor_1"]
+compositor_effects = Array[CompositorEffect]([SubResource("CompositorEffect_fkaoq")])
+
+[node name="CompositorTest" type="Node3D" unique_id=183368578]
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1779469647]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1755081181]
+transform = Transform3D(0.6515899, -0.7546339, -0.07719192, 0.32062975, 0.18175885, 0.9296026, -0.68747896, -0.6304697, 0.36039057, 0, 5, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=700711723]
+environment = SubResource("Environment_1")
+compositor = SubResource("Compositor_1")
