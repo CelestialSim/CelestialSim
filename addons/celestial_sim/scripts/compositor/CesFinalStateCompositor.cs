@@ -13,7 +13,7 @@ using Godot.Collections;
 public partial class CesFinalStateCompositor : CompositorEffect
 {
     private RenderingDevice? rd;
-    private const string DefaultDrawShaderPath = "res://addons/celestial_sim/assets/shaders/ces_final_state_compositor.glsl";
+    private const string DefaultDrawShaderPath = "res://addons/celestial_sim/scripts/compositor/ces_final_state_compositor.glsl";
 
     [Export]
     public NodePath? TargetPath { get; set; }
