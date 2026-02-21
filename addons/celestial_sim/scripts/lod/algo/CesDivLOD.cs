@@ -255,6 +255,7 @@ public class CesDivLOD
         // happens after 4 divisions
 
         CesComputeUtils.DispatchShader(_rd, addTrisPath, bufferInfos, (uint)nTrisToDiv);
+        RenderingServer.CallOnRenderThread(Callable.From(() => _rd.FreeRid(indicesToDivBuffer.buffer)));
         return nTrisAdded;
     }
 }

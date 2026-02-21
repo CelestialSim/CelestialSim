@@ -1,0 +1,50 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" uid="uid://m3clapi0kjt1" path="res://addons/celestial_sim/scripts/api/CesCelestial.cs" id="1_6c5u0"]
+[ext_resource type="Script" uid="uid://chlnjjndmb1yn" path="res://addons/celestial_sim/scripts/lod/layers/CesSphereTerrain.cs" id="2_vcsse"]
+[ext_resource type="Script" uid="uid://bcs6mn1ss7p8h" path="res://addons/celestial_sim/scripts/editor/CesEditorTimer.cs" id="4_st0q7"]
+[ext_resource type="Script" path="res://scripts/OrbitBenchmark.cs" id="5_orbit"]
+
+[node name="Celestial" type="Node3D" node_paths=PackedStringArray("GameplayCamera")]
+script = ExtResource("1_6c5u0")
+GameplayCamera = NodePath("Camera3D")
+UseEditorCamera = false
+Radius = 20.0
+PreciseNormals = false
+Subdivisions = 16
+TriangleScreenSize = 0.001
+ShowDebugMessages = true
+
+[node name="NormalizePos" type="Node3D" parent="."]
+script = ExtResource("2_vcsse")
+
+[node name="Layers" type="Node3D" parent="."]
+
+[node name="CesSphereTerrainLayer" type="Node3D" parent="Layers"]
+script = ExtResource("2_vcsse")
+metadata/_custom_type_script = "uid://chlnjjndmb1yn"
+
+[node name="StaticBody3D" type="StaticBody3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="StaticBody3D"]
+
+[node name="RebuildTimer" type="Timer" parent="."]
+wait_time = 0.1
+autostart = true
+script = ExtResource("4_st0q7")
+RunInEditor = true
+
+[node name="SimTimer" type="Timer" parent="."]
+wait_time = 0.1
+autostart = true
+script = ExtResource("4_st0q7")
+RunInEditor = true
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 24.148077, 0, -3.2109334)
+script = ExtResource("5_orbit")
+PlanetPath = NodePath("..")
+OrbitDurationSeconds = 10.0
+OrbitRadius = 22.0
+QuitWhenCompleted = true
+current = true

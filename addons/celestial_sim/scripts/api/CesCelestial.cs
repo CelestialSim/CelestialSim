@@ -12,6 +12,8 @@ public partial class CesCelestial : Node3D
     private bool _generateCollision;
 
     private Task _genMeshTask;
+    private bool _genMeshRunning;
+    private System.Threading.CancellationTokenSource _genMeshCts;
     private bool _godotNormals = true;
     public CesRunAlgo graphGenerator;
 
@@ -36,6 +38,7 @@ public partial class CesCelestial : Node3D
     private int _ctrlOriginalLevel = 0;
     private bool _debugMode = false;
     private bool _pendingDebugDivisions = false;
+    private bool _isShuttingDown;
     private uint _subdivisions = 3;
     private float _trisScreenSize = 0.1f;
 
@@ -341,14 +344,23 @@ public partial class CesCelestial : Node3D
 
     private void GenMeshAsync()
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
         if (MainCamera == null)
             return;
         // GD.Print("Generating mesh");
         var camLocal = posToLocal(MainCamera.GlobalPosition);
         // Terminate running tasks
-        if (_genMeshTask == null || _genMeshTask.IsCompleted)
+        if (!_genMeshRunning)
         {
-            _genMeshTask = Task.Run(() => GenMesh(camLocal));
+            if (_genMeshCts == null || _genMeshCts.IsCancellationRequested)
+            {
+                _genMeshCts = new System.Threading.CancellationTokenSource();
+            }
+            _genMeshRunning = true;
+            _genMeshTask = GenMeshAsync(camLocal, _genMeshCts.Token);
         }
         else
         {
@@ -368,13 +380,19 @@ public partial class CesCelestial : Node3D
         return cesTransform.Inverse() * pos;
     }
 
-    private async Task GenMesh(Vector3 localCameraPos)
+    private async Task GenMeshAsync(Vector3 localCameraPos, System.Threading.CancellationToken cancellationToken)
     {
-        await Task.Run(() =>
+        try
         {
-            // Start timer
-            var sw = new Stopwatch();
-            sw.Start();
+            await Task.Run(() =>
+            {
+                if (_isShuttingDown || cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                // Start timer
+                var sw = new Stopwatch();
+                sw.Start();
 
             Vector3[] pos;
             int[] tris;
@@ -383,7 +401,12 @@ public partial class CesCelestial : Node3D
             graphGenerator.gen = this;
 
             // In debug mode, skip automatic division marking to preserve manual changes
-            graphGenerator.UpdateTriangleGraph(localCameraPos, skipAutoDivisionMarking: DebugMode);
+                graphGenerator.UpdateTriangleGraph(localCameraPos, skipAutoDivisionMarking: DebugMode);
+
+                if (_isShuttingDown || cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
 
             // Get resutls
             pos = graphGenerator.Pos;
@@ -416,16 +439,13 @@ public partial class CesCelestial : Node3D
             material.SetShaderParameter("radius", _radius);
             mesh.SurfaceSetMaterial(0, material);
 
-            RenderingServer.InstanceSetBase(_instance, mesh.GetRid());
+                CallDeferred(nameof(SwapMesh), mesh);
 
-            RenderingServer.FreeRid(_mesh.GetRid());
-            _mesh = mesh;
-
-            if (GenerateCollision)
-            {
-                var concavePolygonShape3D = _mesh.CreateTrimeshShape();
-                CallDeferred(nameof(UpdateCollider), concavePolygonShape3D);
-            }
+                if (GenerateCollision)
+                {
+                    var concavePolygonShape3D = mesh.CreateTrimeshShape();
+                    CallDeferred(nameof(UpdateCollider), concavePolygonShape3D);
+                }
             // else
             // {
             // 	// remove existing collision shape
@@ -440,9 +460,26 @@ public partial class CesCelestial : Node3D
                 CallDeferred(nameof(ApplyDebugDivisions));
             }
 
-            if (ShowDebugMessages)
-                GD.Print($"Completed in {sw.ElapsedMilliseconds} ms");
-        });
+                if (ShowDebugMessages)
+                    GD.Print($"Completed in {sw.ElapsedMilliseconds} ms");
+            }, cancellationToken);
+        }
+        finally
+        {
+            _genMeshRunning = false;
+        }
+    }
+
+    private void SwapMesh(ArrayMesh mesh)
+    {
+        if (_isShuttingDown || !IsInsideTree())
+        {
+            return;
+        }
+
+        RenderingServer.InstanceSetBase(_instance, mesh.GetRid());
+        RenderingServer.FreeRid(_mesh.GetRid());
+        _mesh = mesh;
     }
 
     public void ApplyDebugDivisions()
@@ -546,10 +583,14 @@ public partial class CesCelestial : Node3D
 
     public override void _ExitTree()
     {
+        _isShuttingDown = true;
+        _genMeshCts?.Cancel();
+        GetNodeOrNull<Timer>("RebuildTimer")?.Stop();
+        GetNodeOrNull<Timer>("SimTimer")?.Stop();
         RenderingServer.FreeRid(_instance);
         graphGenerator?.Dispose();
         graphGenerator = null;
-        rd = RenderingServer.CreateLocalRenderingDevice();
+        _genMeshRunning = false;
     }
 
     public override void _EnterTree()

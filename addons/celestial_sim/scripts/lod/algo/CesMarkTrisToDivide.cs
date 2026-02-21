@@ -40,6 +40,7 @@ public class CesMarkTrisToDivide
         // Dispatch compute shader
         var xGroups = cesState.nTris;
         CesComputeUtils.DispatchShader(rd, shaderPath, bufferInfos, xGroups);
+        RenderingServer.CallOnRenderThread(Callable.From(() => rd.FreeRid(trisSizeBuffer.buffer)));
 
     }
 }

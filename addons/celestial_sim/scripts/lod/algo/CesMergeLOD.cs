@@ -58,6 +58,8 @@ public class CesMergeLOD
         };
 
         CesComputeUtils.DispatchShader(_rd, mergeTrisPath, bufferInfosRemove, (uint)n_tris_to_merge);
+        RenderingServer.CallOnRenderThread(Callable.From(() => _rd.FreeRid(indicesToRemoveBuffer.buffer)));
+        RenderingServer.CallOnRenderThread(Callable.From(() => _rd.FreeRid(trisOutputBuffer.buffer)));
 
         state.nDeactivatedTris += (uint)n_tris_to_merge;
 

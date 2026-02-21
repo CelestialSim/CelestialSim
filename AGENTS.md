@@ -67,3 +67,8 @@ Do not use the task but use the command:
 ```
 dotnet build
 ```
+
+## Skills
+
+- `godot-start-scene`: start Godot scenes through CLI and collect benchmark logs.
+- `godot-screenshot-scene`: generate a wrapper scene that captures viewport screenshot after N seconds, then run it through the logging script.
