@@ -2,6 +2,7 @@ using System;
 using System.Runtime.InteropServices;
 using Godot;
 
+namespace CelestialSim;
 
 public class CesState
 {

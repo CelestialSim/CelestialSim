@@ -43,3 +43,11 @@ Then the library can be loaded in C#.
 
 To run tests use
 godot Tests/scene_name.tscn --quit-after 3
+
+# Documentation
+
+To build the docs locally:
+1. Install/update DocFX: `dotnet tool install -g docfx` (or `dotnet tool update -g docfx`);
+2. Generate API YAML: `~/.dotnet/tools/docfx metadata docs/docfx.json`;
+3. Build the site: `~/.dotnet/tools/docfx build docs/docfx.json`;
+4. Preview locally: `~/.dotnet/tools/docfx serve docs/docfx/site`.

@@ -6,6 +6,8 @@ using System.Threading.Tasks;
 using Godot;
 using Array = Godot.Collections.Array;
 
+namespace CelestialSim;
+
 [Tool]
 public partial class CesCelestial : Node3D
 {
@@ -394,13 +396,13 @@ public partial class CesCelestial : Node3D
                 var sw = new Stopwatch();
                 sw.Start();
 
-            Vector3[] pos;
-            int[] tris;
+                Vector3[] pos;
+                int[] tris;
 
-            graphGenerator ??= new CesRunAlgo();
-            graphGenerator.gen = this;
+                graphGenerator ??= new CesRunAlgo();
+                graphGenerator.gen = this;
 
-            // In debug mode, skip automatic division marking to preserve manual changes
+                // In debug mode, skip automatic division marking to preserve manual changes
                 graphGenerator.UpdateTriangleGraph(localCameraPos, skipAutoDivisionMarking: DebugMode);
 
                 if (_isShuttingDown || cancellationToken.IsCancellationRequested)
@@ -408,36 +410,36 @@ public partial class CesCelestial : Node3D
                     return;
                 }
 
-            // Get resutls
-            pos = graphGenerator.Pos;
-            tris = graphGenerator.Triangles;
-            var norm = graphGenerator.Norm;
-            var simValue = graphGenerator.SimValue;
+                // Get resutls
+                pos = graphGenerator.Pos;
+                tris = graphGenerator.Triangles;
+                var norm = graphGenerator.Norm;
+                var simValue = graphGenerator.SimValue;
 
-            var surfaceArray = new Array();
-            surfaceArray.Resize((int)Mesh.ArrayType.Max);
-            // return;
-            // Add vertices to the mesh		
-            surfaceArray[(int)Mesh.ArrayType.Vertex] = pos;
-            surfaceArray[(int)Mesh.ArrayType.TexUV] = simValue;
-            surfaceArray[(int)Mesh.ArrayType.Normal] = norm;
-            surfaceArray[(int)Mesh.ArrayType.Index] = tris;
+                var surfaceArray = new Array();
+                surfaceArray.Resize((int)Mesh.ArrayType.Max);
+                // return;
+                // Add vertices to the mesh		
+                surfaceArray[(int)Mesh.ArrayType.Vertex] = pos;
+                surfaceArray[(int)Mesh.ArrayType.TexUV] = simValue;
+                surfaceArray[(int)Mesh.ArrayType.Normal] = norm;
+                surfaceArray[(int)Mesh.ArrayType.Index] = tris;
 
-            var mesh = new ArrayMesh();
-            mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, surfaceArray);
+                var mesh = new ArrayMesh();
+                mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, surfaceArray);
 
 
-            // GD.Print("Vertex: ", vtex, " ", meshData.posy[index], " ", meshData.posz[index]);
-            if (ShowDebugMessages)
-                GD.Print("Mesh Triangles: ", tris.Length / 3);
+                // GD.Print("Vertex: ", vtex, " ", meshData.posy[index], " ", meshData.posz[index]);
+                if (ShowDebugMessages)
+                    GD.Print("Mesh Triangles: ", tris.Length / 3);
 
-            // MeshInstance3D.
-            var material = new ShaderMaterial
-            {
-                Shader = Shader
-            };
-            material.SetShaderParameter("radius", _radius);
-            mesh.SurfaceSetMaterial(0, material);
+                // MeshInstance3D.
+                var material = new ShaderMaterial
+                {
+                    Shader = Shader
+                };
+                material.SetShaderParameter("radius", _radius);
+                mesh.SurfaceSetMaterial(0, material);
 
                 CallDeferred(nameof(SwapMesh), mesh);
 
@@ -446,19 +448,19 @@ public partial class CesCelestial : Node3D
                     var concavePolygonShape3D = mesh.CreateTrimeshShape();
                     CallDeferred(nameof(UpdateCollider), concavePolygonShape3D);
                 }
-            // else
-            // {
-            // 	// remove existing collision shape
-            // 	var shape = new ConcavePolygonShape3D();
-            // 	CallDeferred(nameof(UpdateCollider), shape);
-            // }
+                // else
+                // {
+                // 	// remove existing collision shape
+                // 	var shape = new ConcavePolygonShape3D();
+                // 	CallDeferred(nameof(UpdateCollider), shape);
+                // }
 
-            // Apply pending debug divisions if needed (after first mesh generation)
-            if (_pendingDebugDivisions)
-            {
-                _pendingDebugDivisions = false;
-                CallDeferred(nameof(ApplyDebugDivisions));
-            }
+                // Apply pending debug divisions if needed (after first mesh generation)
+                if (_pendingDebugDivisions)
+                {
+                    _pendingDebugDivisions = false;
+                    CallDeferred(nameof(ApplyDebugDivisions));
+                }
 
                 if (ShowDebugMessages)
                     GD.Print($"Completed in {sw.ElapsedMilliseconds} ms");

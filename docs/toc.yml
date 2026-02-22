@@ -1,7 +1,8 @@
+- name: Overview
+  href: index.md
 - name: Introduction
   href: introduction.md
 - name: Getting Started
   href: getting-started.md
-# TODO: this was meant to show a list of all the available classes, not working right now
-# - name: API Reference
-#   href: docfx/api/toc.yml
+- name: API reference
+  href: docfx/api/toc.yml

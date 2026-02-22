@@ -1,0 +1,30 @@
+name: Documentation
+on:
+  push:
+    branches:
+      - feat/docs
+      - main
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - run: dotnet tool install -g docfx
+      - run: ~/.dotnet/tools/docfx metadata docs/docfx.json
+      - run: ~/.dotnet/tools/docfx build docs/docfx.json
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: docs/docfx/site
+      - uses: actions/deploy-pages@v4
+        id: deployment

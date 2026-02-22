@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using Godot;
 
+namespace CelestialSim;
+
 public class CesRunAlgo
 {
 

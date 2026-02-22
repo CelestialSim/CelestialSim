@@ -1,0 +1,46 @@
+.inheritedMembers-collapsible>summary {
+    cursor: pointer;
+    list-style-position: inside;
+}
+
+.inheritedMembers-collapsible>summary::before {
+    content: '';
+    display: inline-block;
+    width: 0;
+    height: 0;
+    margin-right: 0.45rem;
+    border-top: 0.3rem solid transparent;
+    border-bottom: 0.3rem solid transparent;
+    border-left: 0.42rem solid currentColor;
+    transform: translateY(1px);
+    transform-origin: 35% 50%;
+    transition: transform 0.12s ease;
+    opacity: 0.9;
+}
+
+.inheritedMembers-collapsible[open]>summary::before {
+    transform: rotate(90deg);
+}
+
+.inheritedMembers-collapsible>summary::after {
+    content: ' Show';
+    display: inline-block;
+    width: 5ch;
+    margin-left: 0.35rem;
+    text-align: left;
+    opacity: 0.75;
+    font-size: 0.9em;
+}
+
+.inheritedMembers-collapsible[open]>summary::after {
+    content: ' Hide';
+}
+
+.inheritedMembers-collapsible>summary::-webkit-details-marker {
+    cursor: pointer;
+    display: none;
+}
+
+.inheritedMembers-collapsible>.inheritedMembersContent {
+    margin-top: 0.5rem;
+}

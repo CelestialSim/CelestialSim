@@ -8,6 +8,8 @@ using System;
 using Godot;
 using Godot.Collections;
 
+namespace CelestialSim;
+
 [Tool]
 [GlobalClass]
 public partial class CesFinalStateCompositor : CompositorEffect

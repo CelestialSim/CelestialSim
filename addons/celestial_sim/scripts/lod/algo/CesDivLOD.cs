@@ -3,6 +3,7 @@ using System.Linq;
 using Godot;
 using Godot.Collections;
 
+namespace CelestialSim;
 
 public class CesDivLOD
 {
