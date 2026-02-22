@@ -1,5 +1,6 @@
 using Godot;
 
+namespace CelestialSim;
 
 public static class CesTriangleLogger
 {

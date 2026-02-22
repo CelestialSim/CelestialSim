@@ -1,6 +1,7 @@
 using Godot;
 using Array = Godot.Collections.Array;
 
+namespace CelestialSim;
 
 public class CesDebugUtils
 {
@@ -236,7 +237,7 @@ public class CesDebugUtils
                     if (triangleInfo.Value.IsDivided == 0)
                     {
                         // Mark triangle to be divided
-                        DebugMarkTriangleToDivide(celestial,triangleIndex);
+                        DebugMarkTriangleToDivide(celestial, triangleIndex);
                         GD.Print($"Divided 1 triangle (triangle {triangleIndex})");
 
                         // Apply the division immediately
@@ -293,10 +294,10 @@ public class CesDebugUtils
                 GD.Print($"Merging triangle {triangleIndex} in debug mode");
 
                 // Check if triangle is divided before trying to merge
-                var triangleInfo = CesTriangleLogger.GetTriangleInfo(celestial,triangleIndex);
+                var triangleInfo = CesTriangleLogger.GetTriangleInfo(celestial, triangleIndex);
                 if (triangleInfo.HasValue && triangleInfo.Value.IsDivided == 1)
                 {
-                    DebugMarkTriangleToMerge(celestial,triangleIndex);
+                    DebugMarkTriangleToMerge(celestial, triangleIndex);
                     celestial.ApplyManualDivisions();
                     mergedCount++;
                 }

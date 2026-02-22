@@ -1,6 +1,7 @@
 using Godot;
 using static System.Linq.Enumerable;
 
+namespace CelestialSim;
 
 public class CesCoreState
 {

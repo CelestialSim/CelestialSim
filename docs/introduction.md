@@ -1,10 +1,13 @@
 # CelestialSim Overview
 
+> [!WARNING]
+> **Draft documentation:** this documentation is still in progress and missing key pages/sections.
+
 CelestialSim is a Godot plugin that renders adaptive level-of-detail (LOD) terrain on top of an icosphere base mesh. By dynamically subdividing triangles near the camera while keeping distant regions coarse, it delivers Earth-scale planets without exhausting GPU budget.
 
 ## What It Does
 
-- Builds on an icosphere bootstrap (12 vertices, 20 triangles) stored in [`CesState`](xref:ces.Rendering.CesState)
+- Builds on an icosphere bootstrap (12 vertices, 20 triangles) stored in `CesState`
 - Tracks triangle neighbors, levels, division flags, and removal masks inside compute-friendly buffers
 - Uses Slang compute shaders driven through Godot's `RenderingDevice` to keep CPU usage low while achieving smooth, continuous LOD
 
@@ -13,9 +16,9 @@ CelestialSim is a Godot plugin that renders adaptive level-of-detail (LOD) terra
 High-level control sits inside lightweight C# wrappers that plug into Godot nodes or tools:
 
 1. `CesDivCheckShader` evaluates every active triangle, measuring screen-space size and storing intermediate values. Its only job is to mark elements in `t_to_divide_mask`.
-2. [`CesDivConstraintShader`](xref:CelestialSim.addons.celestial_sim.client.division.CesDivConstraintShader) validates the triangles flagged for subdivision and clears any that would introduce more than a 1-level jump with neighbors.
-3. [`CesDivShader`](xref:CelestialSim.addons.celestial_sim.client.division.CesDivShader) performs the actual 1→4 split, creating midpoint vertices, updating neighbor relationships, and maintaining the hierarchy used by [`CesStateVerifier`](xref:ces.Rendering.CesStateVerifier).
-4. [`CesComputeUtils`](xref:ces.Rendering.division.CesComputeUtils) wraps common buffer setup plus the `RenderingDevice.Dispatch()` call so each stage can focus on pure shader logic.
+2. `CesDivConstraintShader` validates the triangles flagged for subdivision and clears any that would introduce more than a 1-level jump with neighbors.
+3. `CesDivShader` performs the actual 1→4 split, creating midpoint vertices, updating neighbor relationships, and maintaining the hierarchy used by `CesStateVerifier`.
+4. `CesComputeUtils` wraps common buffer setup plus the `RenderingDevice.Dispatch()` call so each stage can focus on pure shader logic.
 
 Each wrapper loops until no more triangles request subdivision, ensuring consistent detail budgets per frame.
 
@@ -30,11 +33,11 @@ Each wrapper loops until no more triangles request subdivision, ensuring consist
 
 ## Adaptive LOD Loop
 
-1. **Initialize** – Load the base icosphere mesh into `CesState`, configure GPU buffers via [`BuffersCache`](xref:ces.Rendering.BuffersCache), and prime any custom simulation layers (e.g., [`CesSimLayer`](xref:ces.Rendering.Sims.CesSimLayer)).
+1. **Initialize** – Load the base icosphere mesh into `CesState`, configure GPU buffers via `BuffersCache`, and prime any custom simulation layers (e.g., `CesSimLayer`).
 2. **Check** – Run `CesDivCheckShader` to flag triangles whose projected area exceeds `max_tri_size`.
 3. **Validate** – Call `CesDivConstraintShader` so that no neighboring triangle differs by more than one LOD level.
 4. **Subdivide** – Dispatch `CesDivShader` to split each validated triangle, update neighbor graph data, and enqueue any follow-up work.
-5. **Layer Processing** – Optional layers like [`CesNormalizePos`](xref:CelestialSim.scripts.client.Layers.CesNormalizePos) or water simulations modify positions before rendering.
-6. **Output** – Execute `ComputeNormals` plus export routines (see [`CesFinalOutput`](xref:ces.Rendering.division.CesFinalOutput)) to feed Godot meshes and materials.
+5. **Layer Processing** – Optional layers like `CesNormalizePos` or water simulations modify positions before rendering.
+6. **Output** – Execute `ComputeNormals` plus export routines (see `CesFinalOutput`) to feed Godot meshes and materials.
 
 These steps repeat until no additional triangles exceed the subdivision threshold, allowing CelestialSim to react instantly to camera movement while keeping the triangle budget predictable.

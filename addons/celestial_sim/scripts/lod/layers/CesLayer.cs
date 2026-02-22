@@ -1,5 +1,6 @@
 using Godot;
 
+namespace CelestialSim;
 
 // Layers for creating terrain, they have a get height method
 [Tool]

@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 using Godot;
 using Godot.Collections;
 
+namespace CelestialSim;
+
 public class CesComputeUtils
 {
 

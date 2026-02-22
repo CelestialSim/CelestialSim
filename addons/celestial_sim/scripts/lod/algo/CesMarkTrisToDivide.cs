@@ -1,5 +1,7 @@
 using Godot;
 
+namespace CelestialSim;
+
 public class CesMarkTrisToDivide
 {
     private readonly RenderingDevice rd;

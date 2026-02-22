@@ -1,5 +1,7 @@
 using Godot;
 
+namespace CelestialSim;
+
 public class CesUpdateNeighbors
 {
     private readonly RenderingDevice _rd;

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 
+namespace CelestialSim;
 
 /// <summary>
 /// Represents comprehensive information about a triangle in the celestial mesh.

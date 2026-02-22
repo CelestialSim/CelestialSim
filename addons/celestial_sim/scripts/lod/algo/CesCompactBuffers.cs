@@ -1,6 +1,7 @@
 using System;
 using Godot;
 
+namespace CelestialSim;
 
 public class CesCompactBuffers
 {

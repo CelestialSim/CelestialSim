@@ -1,7 +1,9 @@
 # Documentation
 
 To build the docs locally:
-1. Install `docfx` via `dotnet tools install docfx -g`;
-2. Navigate to the `docs/` directory;
-3. Build the necessary files with `docfx metadata` and `docfx build`;
-4. Serve via `docfx serve docfx/site`; this folder is the configured output in `docfx.json`.
+1. Install/update DocFX (`dotnet tool install -g docfx` or `dotnet tool update -g docfx`);
+2. Regenerate API YAML: `~/.dotnet/tools/docfx metadata docs/docfx.json`;
+3. Build the site: `~/.dotnet/tools/docfx build docs/docfx.json`;
+4. Preview locally: `~/.dotnet/tools/docfx serve docs/docfx/site`.
+
+Inherited members are collapsed using a native DocFX custom template hook in `docs/template/public/main.js`.

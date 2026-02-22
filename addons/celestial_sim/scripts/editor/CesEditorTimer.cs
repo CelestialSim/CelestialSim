@@ -1,5 +1,7 @@
 using Godot;
 
+namespace CelestialSim;
+
 [Tool]
 public partial class CesEditorTimer : Timer
 {

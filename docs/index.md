@@ -1,11 +1,14 @@
----
-_layout: landing
----
+# CelestialSim Documentation
 
-# This is the **HOMEPAGE**.
+> [!WARNING]
+> **Draft documentation:** this documentation is still in progress and missing key pages/sections.
 
-Refer to [Markdown](http://daringfireball.net/projects/markdown/) for how to write markdown files.
+CelestialSim is a Godot plugin for rendering planetary and celestial bodies with adaptive LOD terrain.
 
-## Quick Start Notes:
+Use this documentation to understand the rendering pipeline, configure the plugin, and run local development workflows.
 
-1. Add images to the *images* folder if the file is referencing an image.
+## Pages
+
+- [Introduction](introduction.md)
+- [Getting Started](getting-started.md)
+- [API reference](docfx/api/toc.yml)

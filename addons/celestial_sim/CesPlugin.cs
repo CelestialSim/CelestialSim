@@ -1,6 +1,8 @@
 #if TOOLS
 using Godot;
 
+namespace CelestialSim;
+
 [Tool]
 public partial class CesPlugin : EditorPlugin
 {
