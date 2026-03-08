@@ -1,6 +1,8 @@
 use godot::prelude::*;
 
 #[allow(dead_code)]
+mod algo;
+#[allow(dead_code)]
 mod buffer_info;
 #[allow(dead_code)]
 mod compute_utils;
