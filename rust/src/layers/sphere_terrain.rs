@@ -1,4 +1,5 @@
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
 use crate::state::CesState;
@@ -25,7 +26,7 @@ impl CesLayer for CesSphereTerrain {
         self.radius = other.radius();
     }
 
-    fn update_pos(&self, rd: &mut RenderingDevice, state: &CesState) {
+    fn update_pos(&self, rd: &mut Gd<RenderingDevice>, state: &CesState) {
         let radius_buf = compute_utils::create_uniform_buffer(rd, &self.radius);
         let n_verts_buf = compute_utils::create_uniform_buffer(rd, &state.n_verts);
 
@@ -38,8 +39,8 @@ impl CesLayer for CesSphereTerrain {
 
         compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, state.n_verts);
 
-        rd.free_rid(radius_buf.rid);
-        rd.free_rid(n_verts_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, radius_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, n_verts_buf.rid);
     }
 
     fn radius(&self) -> f32 {

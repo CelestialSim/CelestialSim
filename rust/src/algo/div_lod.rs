@@ -1,4 +1,5 @@
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
@@ -19,7 +20,7 @@ fn sort_pair(a: i32, b: i32) -> [i32; 2] {
 ///
 /// Returns the modified `tabc` array (with child triangles appended) and the
 /// number of new vertices created.
-fn compute_new_indices(rd: &mut RenderingDevice, state: &CesState) -> (Vec<Triangle>, u32) {
+fn compute_new_indices(rd: &mut Gd<RenderingDevice>, state: &CesState) -> (Vec<Triangle>, u32) {
     let to_div_mask = state.get_t_to_divide_mask(rd);
     let mut tabc = state.get_t_abc(rd);
     let start_vindex = state.n_verts as i32;
@@ -142,7 +143,7 @@ fn compute_new_indices(rd: &mut RenderingDevice, state: &CesState) -> (Vec<Trian
 /// Performs triangle subdivision. Mirrors C# `CesDivLOD.MakeDiv()`.
 ///
 /// Returns the number of triangles added (0 if nothing to divide).
-pub fn make_div(rd: &mut RenderingDevice, state: &mut CesState, precise_normals: bool) -> u32 {
+pub fn make_div(rd: &mut Gd<RenderingDevice>, state: &mut CesState, precise_normals: bool) -> u32 {
     let remove_repeated_verts: u32 = if precise_normals { 1 } else { 0 };
 
     let to_div_mask = state.get_t_to_divide_mask(rd);
@@ -171,7 +172,7 @@ pub fn make_div(rd: &mut RenderingDevice, state: &mut CesState, precise_normals:
         let (new_tabc, deduped_verts) = compute_new_indices(rd, state);
         n_verts_added = deduped_verts;
         // Replace t_abc buffer with the CPU-computed one
-        rd.free_rid(state.t_abc.rid);
+        compute_utils::free_rid_on_render_thread(rd, state.t_abc.rid);
         state.t_abc = compute_utils::create_storage_buffer(rd, &new_tabc);
     }
 
@@ -237,12 +238,12 @@ pub fn make_div(rd: &mut RenderingDevice, state: &mut CesState, precise_normals:
     compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, n_tris_to_div);
 
     // Free temporary buffers
-    rd.free_rid(indices_to_div_buf.rid);
-    rd.free_rid(old_n_tris_buf.rid);
-    rd.free_rid(old_n_verts_buf.rid);
-    rd.free_rid(n_tris_to_div_buf.rid);
-    rd.free_rid(n_verts_added_buf.rid);
-    rd.free_rid(remove_repeated_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, indices_to_div_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, old_n_tris_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, old_n_verts_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_tris_to_div_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_verts_added_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, remove_repeated_buf.rid);
 
     n_tris_added
 }

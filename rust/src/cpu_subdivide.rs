@@ -1,3 +1,4 @@
+#[allow(unused_imports)]
 use crate::initial_state::{TRIANGLES, VERTICES};
 
 /// CPU-only icosphere subdivision (1→4 split) WITHOUT edge deduplication.

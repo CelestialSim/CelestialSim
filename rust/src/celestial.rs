@@ -1,3 +1,6 @@
+use crate::algo::run_algo::{CesRunAlgo, RunAlgoConfig};
+use crate::layers::sphere_terrain::CesSphereTerrain;
+use crate::layers::CesLayer;
 use godot::builtin::{
     PackedInt32Array, PackedVector2Array, PackedVector3Array, Transform3D, Variant, Vector2,
     Vector3,
@@ -9,11 +12,6 @@ use godot::classes::{
     RenderingDevice, RenderingServer, Shader, ShaderMaterial, StaticBody3D,
 };
 use godot::prelude::*;
-use std::time::Instant;
-
-use crate::algo::run_algo::{CesRunAlgo, RunAlgoConfig};
-use crate::layers::sphere_terrain::CesSphereTerrain;
-use crate::layers::CesLayer;
 
 #[derive(Clone, Copy, PartialEq)]
 struct SettingsSnapshot {
@@ -26,6 +24,34 @@ struct SettingsSnapshot {
     show_debug_messages: bool,
     seed: i32,
 }
+
+struct MeshResult {
+    pos: Vec<Vector3>,
+    normals: Vec<Vector3>,
+    triangles: Vec<i32>,
+    sim_value: Vec<[f32; 2]>,
+}
+
+#[derive(Clone)]
+struct WorkerConfig {
+    subdivisions: u32,
+    radius: f32,
+    triangle_screen_size: f32,
+    precise_normals: bool,
+    low_poly_look: bool,
+    show_debug_messages: bool,
+}
+
+struct WorkerState {
+    rd: Gd<RenderingDevice>,
+    graph_generator: Option<CesRunAlgo>,
+    layers: Vec<Box<dyn CesLayer>>,
+}
+
+// SAFETY: WorkerState contains a local RenderingDevice created via
+// RenderingServer::create_local_rendering_device(). Local RDs are independent
+// and do not share state with the main renderer, making cross-thread use safe.
+unsafe impl Send for WorkerState {}
 
 #[derive(GodotClass)]
 #[class(tool, base = Node3D)]
@@ -64,9 +90,11 @@ pub struct CesCelestialRust {
 
     instance: Rid,
     mesh: Option<Gd<ArrayMesh>>,
-    rd: Option<Gd<RenderingDevice>>,
-    graph_generator: Option<CesRunAlgo>,
-    layers: Vec<Box<dyn CesLayer>>,
+    // Threading fields
+    work_tx: Option<std::sync::mpsc::Sender<(Vector3, WorkerConfig)>>,
+    result_rx: Option<std::sync::mpsc::Receiver<MeshResult>>,
+    worker_handle: Option<std::thread::JoinHandle<WorkerState>>,
+    gen_mesh_running: bool,
     last_cam_position: Vector3,
     last_obj_transform: Transform3D,
     last_settings: SettingsSnapshot,
@@ -91,9 +119,10 @@ impl INode3D for CesCelestialRust {
             shader: None,
             instance: Rid::Invalid,
             mesh: None,
-            rd: None,
-            graph_generator: None,
-            layers: Vec::new(),
+            work_tx: None,
+            result_rx: None,
+            worker_handle: None,
+            gen_mesh_running: false,
             last_cam_position: Vector3::ZERO,
             last_obj_transform: Transform3D::IDENTITY,
             last_settings: SettingsSnapshot {
@@ -122,12 +151,14 @@ impl INode3D for CesCelestialRust {
         rs.instance_set_base(self.instance, mesh.get_rid());
         self.mesh = Some(mesh);
 
-        self.rd = Some(rs.create_local_rendering_device().unwrap());
+        // RD is now owned by the worker thread
+        let rd = rs.create_local_rendering_device().unwrap();
+        let layers: Vec<Box<dyn CesLayer>> = vec![Box::new(CesSphereTerrain::new())];
+        self.spawn_worker(rd, layers);
     }
 
     fn ready(&mut self) {
         self.add_subnodes();
-        self.layers = vec![Box::new(CesSphereTerrain::new())];
         self.last_settings = self.current_settings();
         self.values_updated = true;
     }
@@ -141,12 +172,20 @@ impl INode3D for CesCelestialRust {
         let mut rs = RenderingServer::singleton();
         rs.instance_set_transform(self.instance, global_transform);
 
+        // 1. Check for completed results (non-blocking)
+        if let Some(ref result_rx) = self.result_rx {
+            if let Ok(result) = result_rx.try_recv() {
+                self.gen_mesh_running = false;
+                self.apply_mesh_result(result);
+            }
+        }
+
+        // 2. Check if we need new work
         let cam = self.get_camera();
         if cam.is_none() {
             return;
         }
         let cam = cam.unwrap();
-
         let cam_pos = cam.get_global_position();
         let current_settings = self.current_settings();
         let has_changed = global_transform != self.last_obj_transform
@@ -154,28 +193,66 @@ impl INode3D for CesCelestialRust {
             || current_settings != self.last_settings
             || self.values_updated;
 
-        if !has_changed {
+        if !has_changed || self.gen_mesh_running {
             return;
         }
 
+        // 3. Update tracking state and dispatch work
         self.last_obj_transform = global_transform;
         self.last_cam_position = cam_pos;
         self.last_settings = current_settings;
         self.values_updated = false;
 
         let cam_local = global_transform.affine_inverse() * cam_pos;
-        self.gen_mesh(cam_local);
+        let config = WorkerConfig {
+            subdivisions: self.subdivisions,
+            radius: self.radius,
+            triangle_screen_size: self.triangle_screen_size,
+            precise_normals: self.precise_normals,
+            low_poly_look: self.low_poly_look,
+            show_debug_messages: self.show_debug_messages,
+        };
+
+        if let Some(ref work_tx) = self.work_tx {
+            if work_tx.send((cam_local, config)).is_ok() {
+                self.gen_mesh_running = true;
+            } else {
+                godot_print!("[CesCelestialRust] ERROR: Failed to send work to worker thread");
+            }
+        } else {
+            godot_print!("[CesCelestialRust] ERROR: work_tx is None, worker not spawned");
+        }
     }
 
     fn exit_tree(&mut self) {
         self.is_shutting_down = true;
 
-        if let Some(ref mut rd) = self.rd {
-            if let Some(ref mut gen) = self.graph_generator {
-                gen.dispose(rd);
+        // Drop the sender to signal the worker thread to exit
+        drop(self.work_tx.take());
+        self.result_rx = None;
+
+        // Join the worker thread with a timeout to recover the RenderingDevice.
+        // The worker should be idle on recv() which will return Err immediately
+        // once work_tx is dropped.
+        if let Some(handle) = self.worker_handle.take() {
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let worker = handle.join();
+                let _ = done_tx.send(worker);
+            });
+            match done_rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                Ok(Ok(mut worker)) => {
+                    // Free the local RenderingDevice explicitly before engine teardown
+                    if let Some(ref mut gen) = worker.graph_generator {
+                        gen.dispose(&mut worker.rd);
+                    }
+                    worker.rd.free();
+                }
+                _ => {
+                    godot_warn!("Worker thread did not shut down in time; GPU resources may leak");
+                }
             }
         }
-        self.graph_generator = None;
 
         let mut rs = RenderingServer::singleton();
         if self.instance.is_valid() {
@@ -186,8 +263,6 @@ impl INode3D for CesCelestialRust {
             rs.free_rid(mesh.get_rid());
         }
         self.mesh = None;
-        self.rd = None;
-        self.layers.clear();
     }
 }
 
@@ -225,51 +300,31 @@ impl CesCelestialRust {
         self.base().get_viewport().and_then(|vp| vp.get_camera_3d())
     }
 
-    fn gen_mesh(&mut self, cam_local: Vector3) {
-        let total_start = Instant::now();
-        let config = RunAlgoConfig {
-            subdivisions: self.subdivisions,
-            radius: self.radius,
-            triangle_screen_size: self.triangle_screen_size,
-            precise_normals: self.precise_normals,
-            low_poly_look: self.low_poly_look,
-            show_debug_messages: self.show_debug_messages,
-        };
-
-        if self.graph_generator.is_none() {
-            self.graph_generator = Some(CesRunAlgo::new());
-        }
-
-        let rd = self.rd.as_mut().unwrap();
-        let gen = self.graph_generator.as_mut().unwrap();
-        gen.update_triangle_graph(rd, cam_local, &config, &mut self.layers, false);
-
-        if gen.pos.is_empty() || gen.triangles.is_empty() {
+    fn apply_mesh_result(&mut self, result: MeshResult) {
+        if result.pos.is_empty() || result.triangles.is_empty() {
             return;
         }
 
-        // Build packed arrays
         let mut packed_verts = PackedVector3Array::new();
-        for v in gen.pos.iter() {
+        for v in result.pos.iter() {
             packed_verts.push(*v);
         }
 
         let mut packed_normals = PackedVector3Array::new();
-        for n in gen.normals.iter() {
+        for n in result.normals.iter() {
             packed_normals.push(*n);
         }
 
         let mut packed_indices = PackedInt32Array::new();
-        for idx in gen.triangles.iter() {
+        for idx in result.triangles.iter() {
             packed_indices.push(*idx);
         }
 
         let mut packed_uvs = PackedVector2Array::new();
-        for uv in gen.sim_value.iter() {
+        for uv in result.sim_value.iter() {
             packed_uvs.push(Vector2::new(uv[0], uv[1]));
         }
 
-        // Build surface array
         let mut surface_array = varray![];
         surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
         surface_array.set(ArrayType::VERTEX.ord() as usize, &packed_verts.to_variant());
@@ -293,7 +348,6 @@ impl CesCelestialRust {
             new_mesh.surface_set_material(0, &material);
         }
 
-        // Swap mesh on rendering server
         let mut rs = RenderingServer::singleton();
         rs.instance_set_base(self.instance, new_mesh.get_rid());
 
@@ -303,16 +357,11 @@ impl CesCelestialRust {
         self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
-            godot_print!("Mesh Triangles: {}", gen.triangles.len() / 3);
+            godot_print!("Mesh Triangles: {}", result.triangles.len() / 3);
         }
 
-        // Collision
         if self.generate_collision {
             self.update_collision();
-        }
-
-        if self.show_debug_messages {
-            godot_print!("Completed in {} ms", total_start.elapsed().as_millis());
         }
     }
 
@@ -328,6 +377,73 @@ impl CesCelestialRust {
 
         static_body.add_child(&collision_shape);
         self.base_mut().add_child(&static_body);
+    }
+
+    /// Spawns the persistent worker thread. The worker owns the RenderingDevice,
+    /// RunAlgo, and layers. It waits for work requests and sends back MeshResults.
+    fn spawn_worker(&mut self, rd: Gd<RenderingDevice>, layers: Vec<Box<dyn CesLayer>>) {
+        let (work_tx, work_rx) = std::sync::mpsc::channel::<(Vector3, WorkerConfig)>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<MeshResult>();
+
+        let mut worker = WorkerState {
+            rd,
+            graph_generator: None,
+            layers,
+        };
+
+        let handle = std::thread::spawn(move || {
+            while let Ok((cam_local, config)) = work_rx.recv() {
+                let algo_config = RunAlgoConfig {
+                    subdivisions: config.subdivisions,
+                    radius: config.radius,
+                    triangle_screen_size: config.triangle_screen_size,
+                    precise_normals: config.precise_normals,
+                    low_poly_look: config.low_poly_look,
+                    show_debug_messages: config.show_debug_messages,
+                };
+
+                if worker.graph_generator.is_none() {
+                    worker.graph_generator = Some(CesRunAlgo::new());
+                }
+
+                let gen = worker.graph_generator.as_mut().unwrap();
+                gen.update_triangle_graph(
+                    &mut worker.rd,
+                    cam_local,
+                    &algo_config,
+                    &mut worker.layers,
+                    false,
+                );
+
+                if gen.pos.is_empty() || gen.triangles.is_empty() {
+                    let _ = result_tx.send(MeshResult {
+                        pos: vec![],
+                        normals: vec![],
+                        triangles: vec![],
+                        sim_value: vec![],
+                    });
+                    continue;
+                }
+
+                let result = MeshResult {
+                    pos: gen.pos.clone(),
+                    normals: gen.normals.clone(),
+                    triangles: gen.triangles.clone(),
+                    sim_value: gen.sim_value.clone(),
+                };
+
+                if result_tx.send(result).is_err() {
+                    break; // Main thread dropped the receiver, exit
+                }
+            }
+
+            // Return worker state for cleanup
+            worker
+        });
+
+        self.work_tx = Some(work_tx);
+        self.result_rx = Some(result_rx);
+        self.worker_handle = Some(handle);
     }
 
     fn update_collision(&mut self) {
@@ -362,5 +478,23 @@ mod tests {
         assert!((config.triangle_screen_size - 0.1).abs() < f32::EPSILON);
         assert!(config.precise_normals);
         assert!(!config.low_poly_look);
+    }
+
+    #[test]
+    fn test_mesh_result_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::MeshResult>();
+    }
+
+    #[test]
+    fn test_worker_config_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::WorkerConfig>();
+    }
+
+    #[test]
+    fn test_worker_state_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::WorkerState>();
     }
 }

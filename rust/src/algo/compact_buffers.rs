@@ -1,4 +1,5 @@
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
@@ -16,7 +17,7 @@ const REMAP_TRI_VERTS_SHADER: &str =
 /// Mirrors C# `CesCompactBuffers.Compact()`.
 ///
 /// Returns 0 if nothing was compacted, otherwise returns the count of compacted items.
-pub fn compact(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
+pub fn compact(rd: &mut Gd<RenderingDevice>, state: &mut CesState) -> u32 {
     // --- Phase A: Compact Triangles ---
     let mut deactivated: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, &state.t_deactivated);
 
@@ -114,12 +115,12 @@ pub fn compact(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
         std::mem::replace(&mut state.t_deactivated, t_deactivated_dst),
     ];
     for buf in &old_bufs {
-        rd.free_rid(buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, buf.rid);
     }
 
-    rd.free_rid(active_prefix_buf.rid);
-    rd.free_rid(n_tris_total_buf.rid);
-    rd.free_rid(active_count_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, active_prefix_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_tris_total_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, active_count_buf.rid);
 
     state.n_tris = active_count;
     state.n_deactivated_tris = 0;
@@ -129,7 +130,7 @@ pub fn compact(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
         rd,
         std::mem::size_of::<i32>() as u32 * state.n_verts,
     );
-    rd.buffer_clear(vert_active_mask_buf.rid, 0, vert_active_mask_buf.filled_size);
+    compute_utils::buffer_clear_on_render_thread(rd, vert_active_mask_buf.rid, 0, vert_active_mask_buf.filled_size);
 
     let n_tris_uniform = compute_utils::create_uniform_buffer(rd, &state.n_tris);
     let n_verts_uniform = compute_utils::create_uniform_buffer(rd, &state.n_verts);
@@ -144,8 +145,8 @@ pub fn compact(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
 
     compute_utils::dispatch_shader(rd, MARK_ACTIVE_VERTS_SHADER, &mark_buffers, state.n_tris);
 
-    rd.free_rid(n_tris_uniform.rid);
-    rd.free_rid(n_verts_uniform.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_tris_uniform.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_verts_uniform.rid);
 
     let mut vert_mask: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, &vert_active_mask_buf);
     compute_utils::sum_array_in_place(&mut vert_mask, false);
@@ -197,8 +198,8 @@ pub fn compact(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
         // Swap vertex buffers
         let old_v_pos = std::mem::replace(&mut state.v_pos, v_pos_dst);
         let old_v_mask = std::mem::replace(&mut state.v_update_mask, v_update_mask_dst);
-        rd.free_rid(old_v_pos.rid);
-        rd.free_rid(old_v_mask.rid);
+        compute_utils::free_rid_on_render_thread(rd, old_v_pos.rid);
+        compute_utils::free_rid_on_render_thread(rd, old_v_mask.rid);
 
         state.n_verts = active_verts_count;
 
@@ -228,16 +229,16 @@ pub fn compact(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
         );
 
         let old_t_abc = std::mem::replace(&mut state.t_abc, t_abc_remapped);
-        rd.free_rid(old_t_abc.rid);
+        compute_utils::free_rid_on_render_thread(rd, old_t_abc.rid);
 
-        rd.free_rid(n_tris_remap_buf.rid);
-        rd.free_rid(active_verts_remap_buf.rid);
-        rd.free_rid(vert_prefix_buf.rid);
-        rd.free_rid(n_verts_total_buf.rid);
-        rd.free_rid(active_verts_count_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, n_tris_remap_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, active_verts_remap_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, vert_prefix_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, n_verts_total_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, active_verts_count_buf.rid);
     }
 
-    rd.free_rid(vert_active_mask_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, vert_active_mask_buf.rid);
 
     active_count
 }

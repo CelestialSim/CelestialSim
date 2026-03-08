@@ -1,5 +1,6 @@
 use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 use godot::prelude::godot_print;
 use std::time::{Duration, Instant};
 
@@ -122,7 +123,7 @@ impl CesRunAlgo {
 
     /// Runs all layers' state initialization and position update.
     fn layers_update(
-        rd: &mut RenderingDevice,
+        rd: &mut Gd<RenderingDevice>,
         state: &CesState,
         layers: &mut [Box<dyn CesLayer>],
         radius: f32,
@@ -142,7 +143,7 @@ impl CesRunAlgo {
     /// Mirrors C# `CesRunAlgo.UpdateTriangleGraph`.
     pub fn update_triangle_graph(
         &mut self,
-        rd: &mut RenderingDevice,
+        rd: &mut Gd<RenderingDevice>,
         cam_local: Vector3,
         config: &RunAlgoConfig,
         layers: &mut [Box<dyn CesLayer>],
@@ -242,7 +243,7 @@ impl CesRunAlgo {
     }
 
     /// Frees all GPU resources held by the state.
-    pub fn dispose(&mut self, rd: &mut RenderingDevice) {
+    pub fn dispose(&mut self, rd: &mut Gd<RenderingDevice>) {
         if let Some(ref state) = self.state {
             state.dispose(rd);
         }

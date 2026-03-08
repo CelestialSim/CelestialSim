@@ -1,4 +1,5 @@
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
@@ -7,7 +8,7 @@ use crate::state::CesState;
 const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/UpdateNeighbors.slang";
 
 /// Dispatches the UpdateNeighbors shader. Mirrors C# `CesUpdateNeighbors.UpdateNeighbors()`.
-pub fn update_neighbors(rd: &mut RenderingDevice, state: &CesState) {
+pub fn update_neighbors(rd: &mut Gd<RenderingDevice>, state: &CesState) {
     let n_tris_buf = compute_utils::create_uniform_buffer(rd, &state.n_tris);
 
     let buffers: Vec<&BufferInfo> = vec![
@@ -28,5 +29,5 @@ pub fn update_neighbors(rd: &mut RenderingDevice, state: &CesState) {
 
     compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, state.n_tris);
 
-    rd.free_rid(n_tris_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_tris_buf.rid);
 }

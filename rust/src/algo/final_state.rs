@@ -1,5 +1,6 @@
 use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 use godot::prelude::godot_print;
 
 use crate::buffer_info::BufferInfo;
@@ -27,7 +28,7 @@ pub struct FinalOutput {
 /// Creates the final compacted mesh output (GPU dispatch + CPU readback).
 /// Mirrors C# `CesFinalState.CreateFinalOutput`.
 pub fn create_final_output(
-    rd: &mut RenderingDevice,
+    rd: &mut Gd<RenderingDevice>,
     state: &CesState,
     _low_poly: bool,
 ) -> FinalOutput {
@@ -41,7 +42,7 @@ pub fn create_final_output(
 
 /// Dispatches the CreateFinalOutput shader to produce a compacted mesh on the GPU.
 /// Mirrors C# `CesFinalState.CreateFinalOutputGpu`.
-pub fn create_final_output_gpu(rd: &mut RenderingDevice, state: &CesState) -> GpuFinalOutput {
+pub fn create_final_output_gpu(rd: &mut Gd<RenderingDevice>, state: &CesState) -> GpuFinalOutput {
     let div_mask = state.get_divided_mask(rd);
     let deactivated_mask = state.get_t_deactivated_mask(rd);
 
@@ -63,7 +64,7 @@ pub fn create_final_output_gpu(rd: &mut RenderingDevice, state: &CesState) -> Gp
     };
 
     if n_visible_tris == 0 || state.n_tris == 0 {
-        rd.free_rid(visible_mask_buffer.rid);
+        compute_utils::free_rid_on_render_thread(rd, visible_mask_buffer.rid);
         return GpuFinalOutput {
             pos: None,
             tris: None,
@@ -110,10 +111,10 @@ pub fn create_final_output_gpu(rd: &mut RenderingDevice, state: &CesState) -> Gp
 
     compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, state.n_tris);
 
-    rd.free_rid(visible_mask_buffer.rid);
-    rd.free_rid(visible_prefix_buffer.rid);
-    rd.free_rid(n_tris_buf.rid);
-    rd.free_rid(n_visible_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, visible_mask_buffer.rid);
+    compute_utils::free_rid_on_render_thread(rd, visible_prefix_buffer.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_tris_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_visible_buf.rid);
 
     GpuFinalOutput {
         pos: Some(out_pos),
@@ -126,7 +127,7 @@ pub fn create_final_output_gpu(rd: &mut RenderingDevice, state: &CesState) -> Gp
 /// Reads GPU final output back to CPU arrays.
 /// Mirrors C# `CesFinalState.ReadFinalOutputToCpu`.
 pub fn read_final_output_to_cpu(
-    rd: &mut RenderingDevice,
+    rd: &mut Gd<RenderingDevice>,
     gpu_output: GpuFinalOutput,
     free_buffers: bool,
 ) -> FinalOutput {
@@ -156,13 +157,13 @@ pub fn read_final_output_to_cpu(
 
     if free_buffers {
         if let Some(ref b) = gpu_output.pos {
-            rd.free_rid(b.rid);
+            compute_utils::free_rid_on_render_thread(rd, b.rid);
         }
         if let Some(ref b) = gpu_output.tris {
-            rd.free_rid(b.rid);
+            compute_utils::free_rid_on_render_thread(rd, b.rid);
         }
         if let Some(ref b) = gpu_output.color {
-            rd.free_rid(b.rid);
+            compute_utils::free_rid_on_render_thread(rd, b.rid);
         }
     }
 

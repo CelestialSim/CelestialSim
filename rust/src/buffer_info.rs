@@ -3,6 +3,8 @@ use godot::classes::{RdUniform, RenderingDevice};
 use godot::obj::{Gd, NewGd};
 use godot::prelude::Rid;
 
+use crate::compute_utils;
+
 /// Type of GPU buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BufferType {
@@ -64,7 +66,7 @@ impl BufferInfo {
     /// If `filled_size + bytes_to_extend` fits within `max_size` (and the buffer
     /// isn't more than 2x the needed size), just bumps `filled_size`.
     /// Otherwise allocates a new buffer, copies data, and frees the old one.
-    pub fn extend_buffer(&mut self, rd: &mut RenderingDevice, bytes_to_extend: u32) {
+    pub fn extend_buffer(&mut self, rd: &mut Gd<RenderingDevice>, bytes_to_extend: u32) {
         let desired_size = self.filled_size + bytes_to_extend;
 
         // Reuse existing buffer if it fits and isn't oversized (>2x)
@@ -73,24 +75,24 @@ impl BufferInfo {
             return;
         }
 
-        // Allocate a new buffer
+        // Allocate a new buffer (does not need render thread)
         let new_rid = rd.storage_buffer_create(desired_size);
         assert!(
             new_rid.is_valid(),
             "Failed to create new storage buffer during extend"
         );
 
-        // Clear the new buffer to prevent garbage data in uninitialized region
-        rd.buffer_clear(new_rid, 0, desired_size);
-
         let old_rid = self.rid;
         let old_filled = self.filled_size;
 
-        // Copy existing data into new buffer
-        rd.buffer_copy(old_rid, new_rid, 0, 0, old_filled);
-
-        // Free old buffer
-        rd.free_rid(old_rid);
+        // Clear, copy, and free on the render thread
+        let rd_send = compute_utils::RdSend(rd.clone());
+        compute_utils::on_render_thread(move || {
+            let mut rd = rd_send;
+            rd.0.buffer_clear(new_rid, 0, desired_size);
+            rd.0.buffer_copy(old_rid, new_rid, 0, 0, old_filled);
+            rd.0.free_rid(old_rid);
+        });
 
         // Update self
         self.rid = new_rid;

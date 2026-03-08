@@ -1,5 +1,6 @@
 use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
@@ -10,7 +11,7 @@ const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/MarkTrisToDiv
 /// Dispatches the MarkTrisToDivide shader to flag triangles whose screen-space
 /// area exceeds `max_tri_size`. Mirrors C# `CesMarkTrisToDivide.FlagLargeTrisToDivide`.
 pub fn flag_large_tris_to_divide(
-    rd: &mut RenderingDevice,
+    rd: &mut Gd<RenderingDevice>,
     state: &CesState,
     camera_pos: Vector3,
     max_divs: u32,
@@ -49,9 +50,9 @@ pub fn flag_large_tris_to_divide(
     compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, state.n_tris);
 
     // Free temporary buffers
-    rd.free_rid(tris_size.rid);
-    rd.free_rid(camera_pos_buf.rid);
-    rd.free_rid(max_divs_buf.rid);
-    rd.free_rid(radius_buf.rid);
-    rd.free_rid(max_tri_size_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, tris_size.rid);
+    compute_utils::free_rid_on_render_thread(rd, camera_pos_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, max_divs_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, radius_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, max_tri_size_buf.rid);
 }

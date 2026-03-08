@@ -1,4 +1,5 @@
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 
 use crate::compute_utils;
 use crate::state::CesState;
@@ -59,7 +60,7 @@ pub const NEIGHT_CA: [i32; 20] = [
 ];
 
 /// Creates the initial icosphere CesState with all 17 GPU buffers.
-pub fn create_core_state(rd: &mut RenderingDevice) -> CesState {
+pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
     let n_tris: u32 = 20;
     let n_verts: u32 = 12;
 

@@ -1,4 +1,5 @@
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
@@ -18,7 +19,7 @@ fn extract_merge_indices(mask: &[i32]) -> Vec<u32> {
 /// Performs triangle merging. Mirrors C# `CesMergeLOD.MakeMerge()`.
 ///
 /// Returns the number of triangles merged (0 if nothing to merge).
-pub fn make_merge(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
+pub fn make_merge(rd: &mut Gd<RenderingDevice>, state: &mut CesState) -> u32 {
     let merge_mask = state.get_t_to_merge_mask(rd);
     let idxs_to_merge = extract_merge_indices(&merge_mask);
 
@@ -55,9 +56,9 @@ pub fn make_merge(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
 
     compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, n_tris_to_merge);
 
-    rd.free_rid(indices_to_merge_buf.rid);
-    rd.free_rid(tris_output_buf.rid);
-    rd.free_rid(n_tris_to_merge_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, indices_to_merge_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, tris_output_buf.rid);
+    compute_utils::free_rid_on_render_thread(rd, n_tris_to_merge_buf.rid);
 
     state.n_deactivated_tris += n_tris_to_merge;
 
