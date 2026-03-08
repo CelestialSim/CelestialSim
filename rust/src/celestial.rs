@@ -5,7 +5,7 @@ use godot::builtin::{
 use godot::classes::mesh::ArrayType;
 use godot::classes::mesh::PrimitiveType;
 use godot::classes::{
-    ArrayMesh, Camera3D, ConcavePolygonShape3D, CollisionShape3D, INode3D, Node3D,
+    ArrayMesh, Camera3D, CollisionShape3D, ConcavePolygonShape3D, Engine, INode3D, Node3D,
     RenderingDevice, RenderingServer, Shader, ShaderMaterial, StaticBody3D,
 };
 use godot::prelude::*;
@@ -14,8 +14,20 @@ use crate::algo::run_algo::{CesRunAlgo, RunAlgoConfig};
 use crate::layers::sphere_terrain::CesSphereTerrain;
 use crate::layers::CesLayer;
 
+#[derive(Clone, Copy, PartialEq)]
+struct SettingsSnapshot {
+    radius: f32,
+    subdivisions: u32,
+    triangle_screen_size: f32,
+    low_poly_look: bool,
+    precise_normals: bool,
+    generate_collision: bool,
+    show_debug_messages: bool,
+    seed: i32,
+}
+
 #[derive(GodotClass)]
-#[class(base = Node3D)]
+#[class(tool, base = Node3D)]
 pub struct CesCelestialRust {
     base: Base<Node3D>,
 
@@ -56,6 +68,7 @@ pub struct CesCelestialRust {
     layers: Vec<Box<dyn CesLayer>>,
     last_cam_position: Vector3,
     last_obj_transform: Transform3D,
+    last_settings: SettingsSnapshot,
     values_updated: bool,
     is_shutting_down: bool,
 }
@@ -82,6 +95,16 @@ impl INode3D for CesCelestialRust {
             layers: Vec::new(),
             last_cam_position: Vector3::ZERO,
             last_obj_transform: Transform3D::IDENTITY,
+            last_settings: SettingsSnapshot {
+                radius: 1.0,
+                subdivisions: 3,
+                triangle_screen_size: 0.1,
+                low_poly_look: true,
+                precise_normals: true,
+                generate_collision: false,
+                show_debug_messages: false,
+                seed: 0,
+            },
             values_updated: false,
             is_shutting_down: false,
         }
@@ -104,6 +127,8 @@ impl INode3D for CesCelestialRust {
     fn ready(&mut self) {
         self.add_subnodes();
         self.layers = vec![Box::new(CesSphereTerrain::new())];
+        self.last_settings = self.current_settings();
+        self.values_updated = true;
     }
 
     fn process(&mut self, _delta: f64) {
@@ -122,8 +147,10 @@ impl INode3D for CesCelestialRust {
         let cam = cam.unwrap();
 
         let cam_pos = cam.get_global_position();
+        let current_settings = self.current_settings();
         let has_changed = global_transform != self.last_obj_transform
             || cam_pos != self.last_cam_position
+            || current_settings != self.last_settings
             || self.values_updated;
 
         if !has_changed {
@@ -132,6 +159,7 @@ impl INode3D for CesCelestialRust {
 
         self.last_obj_transform = global_transform;
         self.last_cam_position = cam_pos;
+        self.last_settings = current_settings;
         self.values_updated = false;
 
         let cam_local = global_transform.affine_inverse() * cam_pos;
@@ -163,10 +191,36 @@ impl INode3D for CesCelestialRust {
 }
 
 impl CesCelestialRust {
+    fn current_settings(&self) -> SettingsSnapshot {
+        SettingsSnapshot {
+            radius: self.radius,
+            subdivisions: self.subdivisions,
+            triangle_screen_size: self.triangle_screen_size,
+            low_poly_look: self.low_poly_look,
+            precise_normals: self.precise_normals,
+            generate_collision: self.generate_collision,
+            show_debug_messages: self.show_debug_messages,
+            seed: self.seed,
+        }
+    }
+
     fn get_camera(&self) -> Option<Gd<Camera3D>> {
         if let Some(ref cam) = self.gameplay_camera {
             return Some(cam.clone());
         }
+
+        if let Some(parent) = self.base().get_parent() {
+            if let Some(camera) = parent.try_get_node_as::<Camera3D>("Camera3D") {
+                return Some(camera);
+            }
+        }
+
+        if Engine::singleton().is_editor_hint() {
+            if let Some(camera) = self.base().get_viewport().and_then(|vp| vp.get_camera_3d()) {
+                return Some(camera);
+            }
+        }
+
         self.base().get_viewport().and_then(|vp| vp.get_camera_3d())
     }
 
@@ -217,8 +271,14 @@ impl CesCelestialRust {
         let mut surface_array = varray![];
         surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
         surface_array.set(ArrayType::VERTEX.ord() as usize, &packed_verts.to_variant());
-        surface_array.set(ArrayType::NORMAL.ord() as usize, &packed_normals.to_variant());
-        surface_array.set(ArrayType::INDEX.ord() as usize, &packed_indices.to_variant());
+        surface_array.set(
+            ArrayType::NORMAL.ord() as usize,
+            &packed_normals.to_variant(),
+        );
+        surface_array.set(
+            ArrayType::INDEX.ord() as usize,
+            &packed_indices.to_variant(),
+        );
         surface_array.set(ArrayType::TEX_UV.ord() as usize, &packed_uvs.to_variant());
 
         let mut new_mesh = ArrayMesh::new_gd();
