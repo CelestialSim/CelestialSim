@@ -75,7 +75,13 @@ impl BufferInfo {
 
         // Allocate a new buffer
         let new_rid = rd.storage_buffer_create(desired_size);
-        assert!(new_rid.is_valid(), "Failed to create new storage buffer during extend");
+        assert!(
+            new_rid.is_valid(),
+            "Failed to create new storage buffer during extend"
+        );
+
+        // Clear the new buffer to prevent garbage data in uninitialized region
+        rd.buffer_clear(new_rid, 0, desired_size);
 
         let old_rid = self.rid;
         let old_filled = self.filled_size;
@@ -128,7 +134,7 @@ mod tests {
     #[test]
     fn test_extend_buffer_reuses_when_fits() {
         // If max_size >= desired and max_size <= desired*2, should just bump filled_size
-        let mut info = BufferInfo::new_storage(Rid::Invalid, 100, 200);
+        let info = BufferInfo::new_storage(Rid::Invalid, 100, 200);
         // desired = 100 + 50 = 150. max_size(200) >= 150 && 200 <= 300. OK → reuse.
         // We can't call extend_buffer without a real RenderingDevice,
         // but we can test the logic by checking the condition directly.

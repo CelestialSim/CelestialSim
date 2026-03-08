@@ -2,15 +2,12 @@ use godot::builtin::{PackedByteArray, Vector3};
 use godot::classes::RdUniform;
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
-use godot::prelude::{load, Rid};
+use godot::prelude::load;
 
 use crate::buffer_info::BufferInfo;
 
 /// Creates a GPU storage buffer from typed data.
-pub fn create_storage_buffer<T: bytemuck::Pod>(
-    rd: &mut RenderingDevice,
-    data: &[T],
-) -> BufferInfo {
+pub fn create_storage_buffer<T: bytemuck::Pod>(rd: &mut RenderingDevice, data: &[T]) -> BufferInfo {
     let bytes = bytemuck::cast_slice(data);
     create_storage_buffer_from_bytes(rd, bytes)
 }
@@ -19,14 +16,12 @@ pub fn create_storage_buffer<T: bytemuck::Pod>(
 pub fn create_empty_storage_buffer(rd: &mut RenderingDevice, byte_length: u32) -> BufferInfo {
     let rid = rd.storage_buffer_create(byte_length);
     assert!(rid.is_valid(), "Failed to create empty storage buffer");
+    rd.buffer_clear(rid, 0, byte_length);
     BufferInfo::new_storage(rid, byte_length, byte_length)
 }
 
 /// Creates a uniform buffer from a single value, with 16-byte alignment padding.
-pub fn create_uniform_buffer<T: bytemuck::Pod>(
-    rd: &mut RenderingDevice,
-    value: &T,
-) -> BufferInfo {
+pub fn create_uniform_buffer<T: bytemuck::Pod>(rd: &mut RenderingDevice, value: &T) -> BufferInfo {
     let data_bytes = bytemuck::bytes_of(value);
     // Pad to 16-byte alignment as required by Godot's uniform buffer spec
     let padded_size = 16.max((data_bytes.len() + 15) / 16 * 16);
@@ -35,7 +30,10 @@ pub fn create_uniform_buffer<T: bytemuck::Pod>(
 
     let mut pba = PackedByteArray::new();
     pba.extend(padded.iter().copied());
-    let rid = rd.uniform_buffer_create_ex(padded_size as u32).data(&pba).done();
+    let rid = rd
+        .uniform_buffer_create_ex(padded_size as u32)
+        .data(&pba)
+        .done();
     assert!(rid.is_valid(), "Failed to create uniform buffer");
     BufferInfo::new_uniform(rid)
 }
@@ -89,16 +87,17 @@ pub fn convert_buffer_to_vec<T: bytemuck::Pod>(
     rd: &mut RenderingDevice,
     buffer: &BufferInfo,
 ) -> Vec<T> {
-    let byte_data = rd.buffer_get_data_ex(buffer.rid).offset_bytes(0).size_bytes(buffer.filled_size).done();
+    let byte_data = rd
+        .buffer_get_data_ex(buffer.rid)
+        .offset_bytes(0)
+        .size_bytes(buffer.filled_size)
+        .done();
     let bytes = byte_data.as_slice();
     bytemuck::cast_slice(bytes).to_vec()
 }
 
 /// Reads a float4 GPU buffer and converts to Vec<Vector3> (discarding w).
-pub fn convert_v4_buffer_to_vec3(
-    rd: &mut RenderingDevice,
-    buffer: &BufferInfo,
-) -> Vec<Vector3> {
+pub fn convert_v4_buffer_to_vec3(rd: &mut RenderingDevice, buffer: &BufferInfo) -> Vec<Vector3> {
     let float_data: Vec<f32> = convert_buffer_to_vec(rd, buffer);
     let num_vectors = float_data.len() / 4;
     let mut result = Vec::with_capacity(num_vectors);
