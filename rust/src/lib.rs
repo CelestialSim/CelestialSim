@@ -4,6 +4,10 @@ use godot::prelude::*;
 mod buffer_info;
 #[allow(dead_code)]
 mod compute_utils;
+#[allow(dead_code)]
+mod state;
+#[allow(dead_code)]
+mod initial_state;
 
 struct CelestialSimExtension;
 
