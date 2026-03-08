@@ -8,12 +8,12 @@ export_presets.cfg
 todos/
 CelestialSim.sln.DotSettings.user
 /addons/shader-slang/
+/rust/target/
 
 # docfx output -- this will be built manually
 /docs/.mkdocs_mdx_cache/
 /docs/site/
 /docs/docfx/
 /docs/_site/
-.serena/
-.answers/
+.changes/
 site/
