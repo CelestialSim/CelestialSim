@@ -33,24 +33,24 @@ pub fn make_merge(rd: &mut RenderingDevice, state: &mut CesState) -> u32 {
     let n_tris_to_merge_buf = compute_utils::create_uniform_buffer(rd, &n_tris_to_merge);
 
     let buffers: Vec<&BufferInfo> = vec![
-        &state.t_abc,              // 0
-        &state.t_divided,          // 1
-        &n_tris_to_merge_buf,      // 2
-        &state.t_neight_ab,        // 3
-        &state.t_neight_bc,        // 4
-        &state.t_neight_ca,        // 5
-        &state.t_a_t,              // 6
-        &state.t_b_t,              // 7
-        &state.t_c_t,              // 8
-        &state.t_center_t,         // 9
-        &indices_to_merge_buf,     // 10
-        &state.t_to_merge_mask,    // 11
-        &tris_output_buf,          // 12
-        &state.t_deactivated,      // 13
-        &state.t_lv,               // 14
-        &state.v_update_mask,      // 15
-        &state.v_pos,              // 16
-        &state.t_parent,           // 17
+        &state.t_abc,           // 0
+        &state.t_divided,       // 1
+        &n_tris_to_merge_buf,   // 2
+        &state.t_neight_ab,     // 3
+        &state.t_neight_bc,     // 4
+        &state.t_neight_ca,     // 5
+        &state.t_a_t,           // 6
+        &state.t_b_t,           // 7
+        &state.t_c_t,           // 8
+        &state.t_center_t,      // 9
+        &indices_to_merge_buf,  // 10
+        &state.t_to_merge_mask, // 11
+        &tris_output_buf,       // 12
+        &state.t_deactivated,   // 13
+        &state.t_lv,            // 14
+        &state.v_update_mask,   // 15
+        &state.v_pos,           // 16
+        &state.t_parent,        // 17
     ];
 
     compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, n_tris_to_merge);
