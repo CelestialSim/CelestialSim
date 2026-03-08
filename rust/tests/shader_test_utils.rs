@@ -42,8 +42,8 @@ pub fn spirv_to_wgsl(spirv_bytes: &[u8]) -> String {
         strict_capabilities: false,
         block_ctx_dump_prefix: None,
     };
-    let module = naga::front::spv::parse_u8_slice(spirv_bytes, &options)
-        .expect("Failed to parse SPIR-V");
+    let module =
+        naga::front::spv::parse_u8_slice(spirv_bytes, &options).expect("Failed to parse SPIR-V");
 
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::empty(),
@@ -53,7 +53,8 @@ pub fn spirv_to_wgsl(spirv_bytes: &[u8]) -> String {
     .expect("naga validation failed");
 
     let mut wgsl = String::new();
-    let mut writer = naga::back::wgsl::Writer::new(&mut wgsl, naga::back::wgsl::WriterFlags::empty());
+    let mut writer =
+        naga::back::wgsl::Writer::new(&mut wgsl, naga::back::wgsl::WriterFlags::empty());
     writer.write(&module, &info).expect("Failed to write WGSL");
     wgsl
 }

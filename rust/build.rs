@@ -57,7 +57,11 @@ fn main() {
 
         match status {
             Ok(s) if s.success() => {
-                println!("cargo::warning=Compiled {} -> {}", path.display(), spv_path.display());
+                println!(
+                    "cargo::warning=Compiled {} -> {}",
+                    path.display(),
+                    spv_path.display()
+                );
             }
             Ok(s) => {
                 println!(
