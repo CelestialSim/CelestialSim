@@ -67,7 +67,8 @@ impl CesState {
         ]
     }
 
-    /// Frees all 17 GPU buffers on the RenderingDevice.
+    /// Frees all 17 GPU buffers. Must be called on the rendering thread
+    /// (or wrapped with CallOnRenderThread in Phase 7/8).
     pub fn dispose(&self, rd: &mut RenderingDevice) {
         for rid in self.all_buffers() {
             rd.free_rid(rid);
