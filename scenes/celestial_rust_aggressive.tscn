@@ -1,12 +1,12 @@
-[gd_scene load_steps=2 format=3 uid="uid://qkeplja1ax0r"]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/assets/shaders/show_level.gdshader" id="1_shader"]
 
 [node name="CelestialRustDemo" type="Node3D"]
 
 [node name="Planet" type="CesCelestialRust" parent="."]
-subdivisions = 2
-triangle_screen_size = 0.2
+subdivisions = 10
+triangle_screen_size = 0.01
 show_debug_messages = true
 shader = ExtResource("1_shader")
 

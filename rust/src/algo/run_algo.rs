@@ -1,6 +1,7 @@
 use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
 use godot::prelude::godot_print;
+use std::time::{Duration, Instant};
 
 use crate::algo::compact_buffers;
 use crate::algo::div_lod;
@@ -20,6 +21,82 @@ pub struct RunAlgoConfig {
     pub precise_normals: bool,
     pub low_poly_look: bool,
     pub show_debug_messages: bool,
+}
+
+struct AlgoTimingTotals {
+    total: Duration,
+    mark: Duration,
+    divide: Duration,
+    merge: Duration,
+    compact: Duration,
+    neighbors: Duration,
+    layers: Duration,
+    final_output: Duration,
+    iterations: u32,
+}
+
+impl AlgoTimingTotals {
+    fn print_summary(&self) {
+        godot_print!(
+            "AlgoTiming summary: iterations={} total={:.3} ms",
+            self.iterations,
+            self.total.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step MarkTrisToDivide: {:.3} ms",
+            self.mark.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step Divide: {:.3} ms",
+            self.divide.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step Merge: {:.3} ms",
+            self.merge.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step Compact: {:.3} ms",
+            self.compact.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step UpdateNeighbors: {:.3} ms",
+            self.neighbors.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step LayersUpdate: {:.3} ms",
+            self.layers.as_secs_f64() * 1000.0
+        );
+        godot_print!(
+            "AlgoTiming step FinalOutput: {:.3} ms",
+            self.final_output.as_secs_f64() * 1000.0
+        );
+
+        let mut slowest = ("MarkTrisToDivide", self.mark);
+        if self.divide > slowest.1 {
+            slowest = ("Divide", self.divide);
+        }
+        if self.merge > slowest.1 {
+            slowest = ("Merge", self.merge);
+        }
+        if self.compact > slowest.1 {
+            slowest = ("Compact", self.compact);
+        }
+        if self.neighbors > slowest.1 {
+            slowest = ("UpdateNeighbors", self.neighbors);
+        }
+        if self.layers > slowest.1 {
+            slowest = ("LayersUpdate", self.layers);
+        }
+        if self.final_output > slowest.1 {
+            slowest = ("FinalOutput", self.final_output);
+        }
+
+        godot_print!(
+            "AlgoTiming slowest: {} ({:.3} ms)",
+            slowest.0,
+            slowest.1.as_secs_f64() * 1000.0
+        );
+    }
 }
 
 /// Orchestrates the adaptive LOD subdivision loop.
@@ -71,6 +148,19 @@ impl CesRunAlgo {
         layers: &mut [Box<dyn CesLayer>],
         skip_auto_division_marking: bool,
     ) {
+        let total_start = Instant::now();
+        let mut timings = AlgoTimingTotals {
+            total: Duration::ZERO,
+            mark: Duration::ZERO,
+            divide: Duration::ZERO,
+            merge: Duration::ZERO,
+            compact: Duration::ZERO,
+            neighbors: Duration::ZERO,
+            layers: Duration::ZERO,
+            final_output: Duration::ZERO,
+            iterations: 0,
+        };
+
         if self.state.is_none() {
             self.state = Some(initial_state::create_core_state(rd));
             Self::layers_update(rd, self.state.as_ref().unwrap(), layers, config.radius);
@@ -84,8 +174,10 @@ impl CesRunAlgo {
 
         while n_tris_added > 0 || n_tris_merged > 0 || first_run {
             first_run = false;
+            timings.iterations += 1;
 
             if !skip_auto_division_marking {
+                let mark_start = Instant::now();
                 mark_tris::flag_large_tris_to_divide(
                     rd,
                     state,
@@ -94,14 +186,19 @@ impl CesRunAlgo {
                     config.radius,
                     config.triangle_screen_size,
                 );
+                timings.mark += mark_start.elapsed();
             }
 
+            let divide_start = Instant::now();
             n_tris_added = div_lod::make_div(rd, state, config.precise_normals);
+            timings.divide += divide_start.elapsed();
             if n_tris_added > 0 && config.show_debug_messages {
                 godot_print!("Divided {} triangles", n_tris_added / 4);
             }
 
+            let merge_start = Instant::now();
             n_tris_merged = merge_lod::make_merge(rd, state);
+            timings.merge += merge_start.elapsed();
             if n_tris_merged > 0 && config.show_debug_messages {
                 godot_print!(
                     "Merged {} triangle(s) (removed {} child triangles)",
@@ -114,21 +211,34 @@ impl CesRunAlgo {
                 if config.show_debug_messages {
                     godot_print!("Removing free space inside buffers");
                 }
+                let compact_start = Instant::now();
                 compact_buffers::compact(rd, state);
+                timings.compact += compact_start.elapsed();
             }
 
             if n_tris_added > 0 || n_tris_merged > 0 {
+                let neighbors_start = Instant::now();
                 update_neighbors::update_neighbors(rd, state);
+                timings.neighbors += neighbors_start.elapsed();
             }
 
+            let layers_start = Instant::now();
             Self::layers_update(rd, state, layers, config.radius);
+            timings.layers += layers_start.elapsed();
         }
 
+        let final_start = Instant::now();
         let final_output = final_state::create_final_output(rd, state, config.low_poly_look);
+        timings.final_output += final_start.elapsed();
         self.pos = final_output.pos;
         self.normals = final_output.normals;
         self.triangles = final_output.tris;
         self.sim_value = final_output.color;
+
+        timings.total = total_start.elapsed();
+        if config.show_debug_messages {
+            timings.print_summary();
+        }
     }
 
     /// Frees all GPU resources held by the state.

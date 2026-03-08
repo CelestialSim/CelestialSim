@@ -9,6 +9,7 @@ use godot::classes::{
     RenderingDevice, RenderingServer, Shader, ShaderMaterial, StaticBody3D,
 };
 use godot::prelude::*;
+use std::time::Instant;
 
 use crate::algo::run_algo::{CesRunAlgo, RunAlgoConfig};
 use crate::layers::sphere_terrain::CesSphereTerrain;
@@ -83,7 +84,7 @@ impl INode3D for CesCelestialRust {
             subdivisions: 3,
             triangle_screen_size: 0.1,
             low_poly_look: true,
-            precise_normals: true,
+            precise_normals: false,
             generate_collision: false,
             show_debug_messages: false,
             seed: 0,
@@ -100,7 +101,7 @@ impl INode3D for CesCelestialRust {
                 subdivisions: 3,
                 triangle_screen_size: 0.1,
                 low_poly_look: true,
-                precise_normals: true,
+                precise_normals: false,
                 generate_collision: false,
                 show_debug_messages: false,
                 seed: 0,
@@ -225,6 +226,7 @@ impl CesCelestialRust {
     }
 
     fn gen_mesh(&mut self, cam_local: Vector3) {
+        let total_start = Instant::now();
         let config = RunAlgoConfig {
             subdivisions: self.subdivisions,
             radius: self.radius,
@@ -301,12 +303,16 @@ impl CesCelestialRust {
         self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
-            godot_print!("Mesh triangles: {}", gen.triangles.len() / 3);
+            godot_print!("Mesh Triangles: {}", gen.triangles.len() / 3);
         }
 
         // Collision
         if self.generate_collision {
             self.update_collision();
+        }
+
+        if self.show_debug_messages {
+            godot_print!("Completed in {} ms", total_start.elapsed().as_millis());
         }
     }
 
