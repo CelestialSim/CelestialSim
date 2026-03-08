@@ -1,5 +1,8 @@
 use godot::prelude::*;
 
+mod buffer_info;
+mod compute_utils;
+
 struct CelestialSimExtension;
 
 #[gdextension]

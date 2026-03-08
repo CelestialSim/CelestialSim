@@ -8,9 +8,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 wgpu = "24"
 pollster = "0.4"
-bytemuck = { version = "1", features = ["derive"] }
 naga = { version = "24", features = ["spv-in", "wgsl-out"] }
