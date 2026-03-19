@@ -12,6 +12,8 @@ use godot::classes::{
     RenderingDevice, RenderingServer, Shader, ShaderMaterial, StaticBody3D,
 };
 use godot::prelude::*;
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq)]
 struct SettingsSnapshot {
@@ -46,6 +48,34 @@ struct WorkerState {
     rd: Gd<RenderingDevice>,
     graph_generator: Option<CesRunAlgo>,
     layers: Vec<Box<dyn CesLayer>>,
+}
+
+struct ScopedTimer {
+    label: &'static str,
+    start: Instant,
+    enabled: bool,
+}
+
+impl ScopedTimer {
+    fn new(label: &'static str, enabled: bool) -> Self {
+        Self {
+            label,
+            start: Instant::now(),
+            enabled,
+        }
+    }
+}
+
+impl Drop for ScopedTimer {
+    fn drop(&mut self) {
+        if self.enabled {
+            godot_print!(
+                "{} took {:.3} ms",
+                self.label,
+                self.start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
 }
 
 // SAFETY: WorkerState contains a local RenderingDevice created via
@@ -83,6 +113,12 @@ pub struct CesCelestialRust {
     show_debug_messages: bool,
 
     #[export]
+    show_process_timing: bool,
+
+    #[export]
+    simulated_process_delay_ms: u32,
+
+    #[export]
     seed: i32,
 
     #[export]
@@ -115,6 +151,8 @@ impl INode3D for CesCelestialRust {
             precise_normals: false,
             generate_collision: false,
             show_debug_messages: false,
+            show_process_timing: false,
+            simulated_process_delay_ms: 0,
             seed: 0,
             shader: None,
             instance: Rid::Invalid,
@@ -168,17 +206,28 @@ impl INode3D for CesCelestialRust {
             return;
         }
 
-        let global_transform = self.base().get_global_transform();
-        let mut rs = RenderingServer::singleton();
-        rs.instance_set_transform(self.instance, global_transform);
-
+        if self.simulated_process_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(
+                self.simulated_process_delay_ms as u64,
+            ));
+        }
+        let mut show_timer = false;
         // 1. Check for completed results (non-blocking)
         if let Some(ref result_rx) = self.result_rx {
             if let Ok(result) = result_rx.try_recv() {
                 self.gen_mesh_running = false;
                 self.apply_mesh_result(result);
+                show_timer = self.show_process_timing; // Show timing when we get a result
             }
         }
+
+        let _process_timer =
+            ScopedTimer::new("CesCelestialRust::process", show_timer);
+
+
+        let global_transform = self.base().get_global_transform();
+        let mut rs = RenderingServer::singleton();
+        rs.instance_set_transform(self.instance, global_transform);
 
         // 2. Check if we need new work
         let cam = self.get_camera();
@@ -305,25 +354,21 @@ impl CesCelestialRust {
             return;
         }
 
-        let mut packed_verts = PackedVector3Array::new();
-        for v in result.pos.iter() {
-            packed_verts.push(*v);
-        }
+        let MeshResult {
+            pos,
+            normals,
+            triangles,
+            sim_value,
+        } = result;
+        let triangle_count = triangles.len() / 3;
 
-        let mut packed_normals = PackedVector3Array::new();
-        for n in result.normals.iter() {
-            packed_normals.push(*n);
-        }
-
-        let mut packed_indices = PackedInt32Array::new();
-        for idx in result.triangles.iter() {
-            packed_indices.push(*idx);
-        }
-
-        let mut packed_uvs = PackedVector2Array::new();
-        for uv in result.sim_value.iter() {
-            packed_uvs.push(Vector2::new(uv[0], uv[1]));
-        }
+        let packed_verts = PackedVector3Array::from(pos);
+        let packed_normals = PackedVector3Array::from(normals);
+        let packed_indices = PackedInt32Array::from(triangles);
+        let packed_uvs: PackedVector2Array = sim_value
+            .into_iter()
+            .map(|uv| Vector2::new(uv[0], uv[1]))
+            .collect();
 
         let mut surface_array = varray![];
         surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
@@ -357,7 +402,7 @@ impl CesCelestialRust {
         self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
-            godot_print!("Mesh Triangles: {}", result.triangles.len() / 3);
+            godot_print!("Mesh Triangles: {}", triangle_count);
         }
 
         if self.generate_collision {

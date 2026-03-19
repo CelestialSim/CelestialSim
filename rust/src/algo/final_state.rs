@@ -5,9 +5,22 @@ use godot::prelude::godot_print;
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
+use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
 const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/CreateFinalOutput.slang";
+
+pub struct FinalStateShader {
+    pipeline: ComputePipeline,
+}
+
+impl FinalStateShader {
+    pub fn new(rd: &mut Gd<RenderingDevice>) -> Self {
+        Self {
+            pipeline: ComputePipeline::new(rd, SHADER_PATH),
+        }
+    }
+}
 
 /// GPU-side output buffers from the final compaction step.
 pub struct GpuFinalOutput {
@@ -31,8 +44,9 @@ pub fn create_final_output(
     rd: &mut Gd<RenderingDevice>,
     state: &CesState,
     _low_poly: bool,
+    shader: &FinalStateShader,
 ) -> FinalOutput {
-    let gpu_output = create_final_output_gpu(rd, state);
+    let gpu_output = create_final_output_gpu(rd, state, shader);
     godot_print!(
         "Number of invisible (deactivate + parents) triangles: {}",
         state.n_tris - gpu_output.n_visible_tris
@@ -42,7 +56,11 @@ pub fn create_final_output(
 
 /// Dispatches the CreateFinalOutput shader to produce a compacted mesh on the GPU.
 /// Mirrors C# `CesFinalState.CreateFinalOutputGpu`.
-pub fn create_final_output_gpu(rd: &mut Gd<RenderingDevice>, state: &CesState) -> GpuFinalOutput {
+pub fn create_final_output_gpu(
+    rd: &mut Gd<RenderingDevice>,
+    state: &CesState,
+    shader: &FinalStateShader,
+) -> GpuFinalOutput {
     let div_mask = state.get_divided_mask(rd);
     let deactivated_mask = state.get_t_deactivated_mask(rd);
 
@@ -89,7 +107,6 @@ pub fn create_final_output_gpu(rd: &mut Gd<RenderingDevice>, state: &CesState) -
         vertex_count * 2 * std::mem::size_of::<f32>() as u32,
     );
 
-    let n_tris_buf = compute_utils::create_uniform_buffer(rd, &state.n_tris);
     let n_visible_buf = compute_utils::create_uniform_buffer(rd, &n_visible_tris);
 
     let buffers: Vec<&BufferInfo> = vec![
@@ -105,15 +122,14 @@ pub fn create_final_output_gpu(rd: &mut Gd<RenderingDevice>, state: &CesState) -
         &out_pos,               // 9
         &out_tris,              // 10
         &out_color,             // 11
-        &n_tris_buf,            // 12
+        &state.u_n_tris,        // 12
         &n_visible_buf,         // 13
     ];
 
-    compute_utils::dispatch_shader(rd, SHADER_PATH, &buffers, state.n_tris);
+    shader.pipeline.dispatch(rd, &buffers, state.n_tris);
 
     compute_utils::free_rid_on_render_thread(rd, visible_mask_buffer.rid);
     compute_utils::free_rid_on_render_thread(rd, visible_prefix_buffer.rid);
-    compute_utils::free_rid_on_render_thread(rd, n_tris_buf.rid);
     compute_utils::free_rid_on_render_thread(rd, n_visible_buf.rid);
 
     GpuFinalOutput {

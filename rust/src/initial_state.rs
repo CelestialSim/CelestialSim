@@ -116,6 +116,8 @@ pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
         v_update_mask: compute_utils::create_storage_buffer(rd, &v_update_mask),
         t_to_divide_mask: compute_utils::create_storage_buffer(rd, &t_to_divide_mask),
         t_to_merge_mask: compute_utils::create_storage_buffer(rd, &t_to_merge_mask),
+        u_n_tris: compute_utils::create_uniform_buffer(rd, &n_tris),
+        u_n_verts: compute_utils::create_uniform_buffer(rd, &n_verts),
     }
 }
 
@@ -207,7 +209,11 @@ mod tests {
 
     #[test]
     fn test_neighbor_indices_in_range() {
-        for &n in NEIGHT_AB.iter().chain(NEIGHT_BC.iter()).chain(NEIGHT_CA.iter()) {
+        for &n in NEIGHT_AB
+            .iter()
+            .chain(NEIGHT_BC.iter())
+            .chain(NEIGHT_CA.iter())
+        {
             assert!(
                 n >= 0 && n < 20,
                 "Neighbor index {} out of range [0, 20)",
@@ -221,9 +227,21 @@ mod tests {
         // Each triangle should have 3 distinct neighbors (one per edge)
         for i in 0..20 {
             let neighbors = [NEIGHT_AB[i], NEIGHT_BC[i], NEIGHT_CA[i]];
-            assert_ne!(neighbors[0], neighbors[1], "Triangle {} has duplicate neighbors", i);
-            assert_ne!(neighbors[1], neighbors[2], "Triangle {} has duplicate neighbors", i);
-            assert_ne!(neighbors[0], neighbors[2], "Triangle {} has duplicate neighbors", i);
+            assert_ne!(
+                neighbors[0], neighbors[1],
+                "Triangle {} has duplicate neighbors",
+                i
+            );
+            assert_ne!(
+                neighbors[1], neighbors[2],
+                "Triangle {} has duplicate neighbors",
+                i
+            );
+            assert_ne!(
+                neighbors[0], neighbors[2],
+                "Triangle {} has duplicate neighbors",
+                i
+            );
             // No triangle is its own neighbor
             for &n in &neighbors {
                 assert_ne!(n, i as i32, "Triangle {} lists itself as a neighbor", i);

@@ -42,6 +42,10 @@ pub struct CesState {
     pub t_to_merge_mask: BufferInfo,
     pub v_pos: BufferInfo,
     pub v_update_mask: BufferInfo,
+
+    // Reusable uniform buffers for n_tris and n_verts
+    pub u_n_tris: BufferInfo,
+    pub u_n_verts: BufferInfo,
 }
 
 impl CesState {
@@ -65,6 +69,8 @@ impl CesState {
             self.t_to_merge_mask.rid,
             self.v_pos.rid,
             self.v_update_mask.rid,
+            self.u_n_tris.rid,
+            self.u_n_verts.rid,
         ]
     }
 
@@ -74,6 +80,16 @@ impl CesState {
         for rid in self.all_buffers() {
             compute_utils::free_rid_on_render_thread(rd, rid);
         }
+    }
+
+    /// Updates the u_n_tris uniform buffer to match current n_tris value.
+    pub fn sync_n_tris_buffer(&self, rd: &mut Gd<RenderingDevice>) {
+        compute_utils::update_uniform_buffer(rd, &self.u_n_tris, &self.n_tris);
+    }
+
+    /// Updates the u_n_verts uniform buffer to match current n_verts value.
+    pub fn sync_n_verts_buffer(&self, rd: &mut Gd<RenderingDevice>) {
+        compute_utils::update_uniform_buffer(rd, &self.u_n_verts, &self.n_verts);
     }
 
     /// Reads the divide mask buffer back to CPU.

@@ -17,3 +17,8 @@ wgpu = "24"
 pollster = "0.4"
 naga = { version = "24", features = ["spv-in", "wgsl-out"] }
 serde_json = "1"
+
+[profile.release]
+debug = true
+strip = false           # Don't remove the info perf needs
+split-debuginfo = "off" # Keep symbols in the binary for easier perf access

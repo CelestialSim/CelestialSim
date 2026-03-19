@@ -103,59 +103,109 @@ pub fn create_uniform_buffer<T: bytemuck::Pod>(
     BufferInfo::new_uniform(rid)
 }
 
-/// Loads a .slang shader resource, gets SPIR-V, creates pipeline, dispatches compute, and syncs.
-/// The entire dispatch runs on the render thread (fire-and-forget).
-pub fn dispatch_shader(
+/// Updates an existing uniform buffer with new data (16-byte aligned).
+/// The buffer must already exist and be large enough.
+pub fn update_uniform_buffer<T: bytemuck::Pod>(
     rd: &mut Gd<RenderingDevice>,
-    shader_path: &str,
-    buffers: &[&BufferInfo],
-    threads: u32,
+    buffer: &BufferInfo,
+    value: &T,
 ) {
-    // Extract plain-data info (Send-safe) to build uniforms inside the closure
-    let buffer_descs: Vec<(Rid, crate::buffer_info::BufferType)> =
-        buffers.iter().map(|b| (b.rid, b.buffer_type)).collect();
+    let data_bytes = bytemuck::bytes_of(value);
+    let padded_size = 16.max((data_bytes.len() + 15) / 16 * 16);
+    let mut padded = vec![0u8; padded_size];
+    padded[..data_bytes.len()].copy_from_slice(data_bytes);
 
+    let rid = buffer.rid;
     let rd_send = RdSend(rd.clone());
-    let shader_path = shader_path.to_string();
-
     on_render_thread(move || {
-        let mut rd = rd_send; // force whole-struct capture (Rust 2021)
-        let mut shader_resource = load::<godot::classes::Resource>(&shader_path);
-        let spirv = shader_resource
-            .call("get_spirv", &[])
-            .to::<Gd<godot::classes::RdShaderSpirv>>();
-        let compute_shader = rd.0.shader_create_from_spirv(&spirv);
-        assert!(
-            compute_shader.is_valid(),
-            "Failed to create shader from SPIR-V"
-        );
-
-        let pipeline = rd.0.compute_pipeline_create(compute_shader);
-        let compute_list = rd.0.compute_list_begin();
-        rd.0.compute_list_bind_compute_pipeline(compute_list, pipeline);
-
-        let mut uniform_array = Array::<Gd<RdUniform>>::new();
-        for (i, (rid, btype)) in buffer_descs.into_iter().enumerate() {
-            let mut uniform = RdUniform::new_gd();
-            uniform.set_uniform_type(btype.to_uniform_type());
-            uniform.set_binding(i as i32);
-            uniform.add_id(rid);
-            uniform_array.push(&uniform);
-        }
-        let uniform_set = rd.0.uniform_set_create(&uniform_array, compute_shader, 0);
-        assert!(uniform_set.is_valid(), "Failed to create uniform set");
-        rd.0.compute_list_bind_uniform_set(compute_list, uniform_set, 0);
-
-        rd.0.compute_list_dispatch(compute_list, threads, 1, 1);
-        rd.0.compute_list_end();
-        rd.0.submit();
-        rd.0.sync();
-
-        // Free transient GPU objects
-        rd.0.free_rid(uniform_set);
-        rd.0.free_rid(pipeline);
-        rd.0.free_rid(compute_shader);
+        let mut rd = rd_send;
+        let mut pba = PackedByteArray::new();
+        pba.extend(padded.iter().copied());
+        rd.0.buffer_update(rid, 0, padded_size as u32, &pba);
     });
+}
+
+/// Cached compute pipeline. Owns the shader and pipeline RIDs; they are freed on drop.
+pub struct ComputePipeline {
+    rd: RdSend,
+    shader: Rid,
+    pipeline: Rid,
+}
+
+impl ComputePipeline {
+    /// Loads the shader from `shader_path`, creates SPIR-V and pipeline.
+    /// Blocks until the render-thread work completes.
+    pub fn new(rd: &mut Gd<RenderingDevice>, shader_path: &str) -> Self {
+        let rd_send = RdSend(rd.clone());
+        let shader_path = shader_path.to_string();
+
+        let (shader, pipeline) = on_render_thread_sync(move || {
+            let mut rd = rd_send;
+            let mut shader_resource = load::<godot::classes::Resource>(&shader_path);
+            let spirv = shader_resource
+                .call("get_spirv", &[])
+                .to::<Gd<godot::classes::RdShaderSpirv>>();
+            let shader = rd.0.shader_create_from_spirv(&spirv);
+            assert!(shader.is_valid(), "Failed to create shader from SPIR-V");
+            let pipeline = rd.0.compute_pipeline_create(shader);
+            assert!(pipeline.is_valid(), "Failed to create compute pipeline");
+            (shader, pipeline)
+        });
+
+        Self {
+            rd: RdSend(rd.clone()),
+            shader,
+            pipeline,
+        }
+    }
+
+    /// Dispatches the cached pipeline. Only the uniform set is created (and freed) per call.
+    pub fn dispatch(&self, rd: &mut Gd<RenderingDevice>, buffers: &[&BufferInfo], threads: u32) {
+        let buffer_descs: Vec<(Rid, crate::buffer_info::BufferType)> =
+            buffers.iter().map(|b| (b.rid, b.buffer_type)).collect();
+
+        let rd_send = RdSend(rd.clone());
+        let shader = self.shader;
+        let pipeline = self.pipeline;
+
+        on_render_thread(move || {
+            let mut rd = rd_send;
+            let compute_list = rd.0.compute_list_begin();
+            rd.0.compute_list_bind_compute_pipeline(compute_list, pipeline);
+
+            let mut uniform_array = Array::<Gd<RdUniform>>::new();
+            for (i, (rid, btype)) in buffer_descs.into_iter().enumerate() {
+                let mut uniform = RdUniform::new_gd();
+                uniform.set_uniform_type(btype.to_uniform_type());
+                uniform.set_binding(i as i32);
+                uniform.add_id(rid);
+                uniform_array.push(&uniform);
+            }
+            let uniform_set = rd.0.uniform_set_create(&uniform_array, shader, 0);
+            assert!(uniform_set.is_valid(), "Failed to create uniform set");
+            rd.0.compute_list_bind_uniform_set(compute_list, uniform_set, 0);
+
+            rd.0.compute_list_dispatch(compute_list, threads, 1, 1);
+            rd.0.compute_list_end();
+            rd.0.submit();
+            rd.0.sync();
+
+            rd.0.free_rid(uniform_set);
+        });
+    }
+}
+
+impl Drop for ComputePipeline {
+    fn drop(&mut self) {
+        let rd_send = RdSend(self.rd.0.clone());
+        let shader = self.shader;
+        let pipeline = self.pipeline;
+        on_render_thread(move || {
+            let mut rd = rd_send;
+            rd.0.free_rid(pipeline);
+            rd.0.free_rid(shader);
+        });
+    }
 }
 
 /// Reads a GPU buffer back to CPU and reinterprets as a Vec<T>.

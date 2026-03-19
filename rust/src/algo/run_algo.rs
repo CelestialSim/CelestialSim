@@ -4,12 +4,12 @@ use godot::obj::Gd;
 use godot::prelude::godot_print;
 use std::time::{Duration, Instant};
 
-use crate::algo::compact_buffers;
-use crate::algo::div_lod;
-use crate::algo::final_state;
-use crate::algo::mark_tris;
-use crate::algo::merge_lod;
-use crate::algo::update_neighbors;
+use crate::algo::compact_buffers::CompactShaders;
+use crate::algo::div_lod::DivShader;
+use crate::algo::final_state::{self, FinalStateShader};
+use crate::algo::mark_tris::MarkTrisShader;
+use crate::algo::merge_lod::MergeShader;
+use crate::algo::update_neighbors::UpdateNeighborsShader;
 use crate::initial_state;
 use crate::layers::CesLayer;
 use crate::state::CesState;
@@ -108,6 +108,12 @@ pub struct CesRunAlgo {
     pub normals: Vec<Vector3>,
     pub triangles: Vec<i32>,
     pub sim_value: Vec<[f32; 2]>,
+    mark_tris_shader: Option<MarkTrisShader>,
+    update_neighbors_shader: Option<UpdateNeighborsShader>,
+    div_shader: Option<DivShader>,
+    merge_shader: Option<MergeShader>,
+    compact_shaders: Option<CompactShaders>,
+    final_state_shader: Option<FinalStateShader>,
 }
 
 impl CesRunAlgo {
@@ -118,6 +124,12 @@ impl CesRunAlgo {
             normals: vec![],
             triangles: vec![],
             sim_value: vec![],
+            mark_tris_shader: None,
+            update_neighbors_shader: None,
+            div_shader: None,
+            merge_shader: None,
+            compact_shaders: None,
+            final_state_shader: None,
         }
     }
 
@@ -164,6 +176,15 @@ impl CesRunAlgo {
 
         if self.state.is_none() {
             self.state = Some(initial_state::create_core_state(rd));
+            self.mark_tris_shader = Some(MarkTrisShader::new(rd));
+            self.update_neighbors_shader = Some(UpdateNeighborsShader::new(rd));
+            self.div_shader = Some(DivShader::new(rd));
+            self.merge_shader = Some(MergeShader::new(rd));
+            self.compact_shaders = Some(CompactShaders::new(rd));
+            self.final_state_shader = Some(FinalStateShader::new(rd));
+            for layer in layers.iter_mut() {
+                layer.init_pipeline(rd);
+            }
             Self::layers_update(rd, self.state.as_ref().unwrap(), layers, config.radius);
         }
 
@@ -179,26 +200,37 @@ impl CesRunAlgo {
 
             if !skip_auto_division_marking {
                 let mark_start = Instant::now();
-                mark_tris::flag_large_tris_to_divide(
-                    rd,
-                    state,
-                    cam_local,
-                    config.subdivisions,
-                    config.radius,
-                    config.triangle_screen_size,
-                );
+                self.mark_tris_shader
+                    .as_ref()
+                    .unwrap()
+                    .flag_large_tris_to_divide(
+                        rd,
+                        state,
+                        cam_local,
+                        config.subdivisions,
+                        config.radius,
+                        config.triangle_screen_size,
+                    );
                 timings.mark += mark_start.elapsed();
             }
 
             let divide_start = Instant::now();
-            n_tris_added = div_lod::make_div(rd, state, config.precise_normals);
+            n_tris_added =
+                self.div_shader
+                    .as_ref()
+                    .unwrap()
+                    .make_div(rd, state, config.precise_normals);
             timings.divide += divide_start.elapsed();
-            if n_tris_added > 0 && config.show_debug_messages {
-                godot_print!("Divided {} triangles", n_tris_added / 4);
+            if n_tris_added > 0 {
+                state.sync_n_tris_buffer(rd);
+                state.sync_n_verts_buffer(rd);
+                if config.show_debug_messages {
+                    godot_print!("Divided {} triangles", n_tris_added / 4);
+                }
             }
 
             let merge_start = Instant::now();
-            n_tris_merged = merge_lod::make_merge(rd, state);
+            n_tris_merged = self.merge_shader.as_ref().unwrap().make_merge(rd, state);
             timings.merge += merge_start.elapsed();
             if n_tris_merged > 0 && config.show_debug_messages {
                 godot_print!(
@@ -213,13 +245,16 @@ impl CesRunAlgo {
                     godot_print!("Removing free space inside buffers");
                 }
                 let compact_start = Instant::now();
-                compact_buffers::compact(rd, state);
+                self.compact_shaders.as_ref().unwrap().compact(rd, state);
                 timings.compact += compact_start.elapsed();
             }
 
             if n_tris_added > 0 || n_tris_merged > 0 {
                 let neighbors_start = Instant::now();
-                update_neighbors::update_neighbors(rd, state);
+                self.update_neighbors_shader
+                    .as_ref()
+                    .unwrap()
+                    .update_neighbors(rd, state);
                 timings.neighbors += neighbors_start.elapsed();
             }
 
@@ -229,7 +264,12 @@ impl CesRunAlgo {
         }
 
         let final_start = Instant::now();
-        let final_output = final_state::create_final_output(rd, state, config.low_poly_look);
+        let final_output = final_state::create_final_output(
+            rd,
+            state,
+            config.low_poly_look,
+            self.final_state_shader.as_ref().unwrap(),
+        );
         timings.final_output += final_start.elapsed();
         self.pos = final_output.pos;
         self.normals = final_output.normals;
