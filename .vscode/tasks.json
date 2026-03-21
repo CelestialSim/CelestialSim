@@ -1,24 +1,20 @@
-
 {
     "version": "2.0.0",
     "tasks": [
         {
             "label": "build",
-            "command": "dotnet",
             "type": "shell",
+            "command": "cargo",
             "args": [
-                "build",
-                "/property:GenerateFullPaths=true",
-                "/consoleloggerparameters:NoSummary"
+                "build"
             ],
-            "group": {
-                "kind": "build",
-                "isDefault": true
+            "options": {
+                "cwd": "${workspaceFolder}/rust"
             },
             "presentation": {
                 "reveal": "silent"
             },
-            "problemMatcher": "$msCompile"
-        }
+            "problemMatcher": "$rustc"
+        },
     ]
 }

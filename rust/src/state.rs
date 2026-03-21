@@ -1,5 +1,6 @@
 use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
+use godot::obj::Gd;
 use godot::prelude::Rid;
 
 use crate::buffer_info::BufferInfo;
@@ -41,6 +42,10 @@ pub struct CesState {
     pub t_to_merge_mask: BufferInfo,
     pub v_pos: BufferInfo,
     pub v_update_mask: BufferInfo,
+
+    // Reusable uniform buffers for n_tris and n_verts
+    pub u_n_tris: BufferInfo,
+    pub u_n_verts: BufferInfo,
 }
 
 impl CesState {
@@ -64,54 +69,66 @@ impl CesState {
             self.t_to_merge_mask.rid,
             self.v_pos.rid,
             self.v_update_mask.rid,
+            self.u_n_tris.rid,
+            self.u_n_verts.rid,
         ]
     }
 
     /// Frees all 17 GPU buffers. Must be called on the rendering thread
     /// (or wrapped with CallOnRenderThread in Phase 7/8).
-    pub fn dispose(&self, rd: &mut RenderingDevice) {
+    pub fn dispose(&self, rd: &mut Gd<RenderingDevice>) {
         for rid in self.all_buffers() {
-            rd.free_rid(rid);
+            compute_utils::free_rid_on_render_thread(rd, rid);
         }
     }
 
+    /// Updates the u_n_tris uniform buffer to match current n_tris value.
+    pub fn sync_n_tris_buffer(&self, rd: &mut Gd<RenderingDevice>) {
+        compute_utils::update_uniform_buffer(rd, &self.u_n_tris, &self.n_tris);
+    }
+
+    /// Updates the u_n_verts uniform buffer to match current n_verts value.
+    pub fn sync_n_verts_buffer(&self, rd: &mut Gd<RenderingDevice>) {
+        compute_utils::update_uniform_buffer(rd, &self.u_n_verts, &self.n_verts);
+    }
+
     /// Reads the divide mask buffer back to CPU.
-    pub fn get_t_to_divide_mask(&self, rd: &mut RenderingDevice) -> Vec<i32> {
+    pub fn get_t_to_divide_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_to_divide_mask)
     }
 
     /// Reads the merge mask buffer back to CPU.
-    pub fn get_t_to_merge_mask(&self, rd: &mut RenderingDevice) -> Vec<i32> {
+    pub fn get_t_to_merge_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_to_merge_mask)
     }
 
     /// Reads vertex positions as Vec<Vector3> (discards w component).
-    pub fn get_pos(&self, rd: &mut RenderingDevice) -> Vec<Vector3> {
+    pub fn get_pos(&self, rd: &mut Gd<RenderingDevice>) -> Vec<Vector3> {
         compute_utils::convert_v4_buffer_to_vec3(rd, &self.v_pos)
     }
 
     /// Reads the t_abc buffer as Vec<Triangle>.
-    pub fn get_t_abc(&self, rd: &mut RenderingDevice) -> Vec<Triangle> {
+    pub fn get_t_abc(&self, rd: &mut Gd<RenderingDevice>) -> Vec<Triangle> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_abc)
     }
 
     /// Reads the divided mask buffer back to CPU.
-    pub fn get_divided_mask(&self, rd: &mut RenderingDevice) -> Vec<i32> {
+    pub fn get_divided_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_divided)
     }
 
     /// Reads the deactivated mask buffer back to CPU.
-    pub fn get_t_deactivated_mask(&self, rd: &mut RenderingDevice) -> Vec<i32> {
+    pub fn get_t_deactivated_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_deactivated)
     }
 
     /// Reads the level buffer back to CPU.
-    pub fn get_level(&self, rd: &mut RenderingDevice) -> Vec<i32> {
+    pub fn get_level(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_lv)
     }
 
     /// Reads vertex update mask and returns indices where value == 1.
-    pub fn convert_v_update_mask_to_idx(&self, rd: &mut RenderingDevice) -> Vec<i32> {
+    pub fn convert_v_update_mask_to_idx(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
         let mask: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, &self.v_update_mask);
         mask.iter()
             .enumerate()
@@ -121,7 +138,7 @@ impl CesState {
     }
 
     /// Reads t_abc as an Nx3 array (discarding the w column).
-    pub fn get_abc_unoptimized(&self, rd: &mut RenderingDevice) -> Vec<[i32; 3]> {
+    pub fn get_abc_unoptimized(&self, rd: &mut Gd<RenderingDevice>) -> Vec<[i32; 3]> {
         let flat: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, &self.t_abc);
         let n = flat.len() / 4;
         (0..n)
@@ -130,12 +147,12 @@ impl CesState {
     }
 
     /// Reads t_abc as Vec<Triangle> (same as get_t_abc, named for C# compat).
-    pub fn get_abc_w(&self, rd: &mut RenderingDevice) -> Vec<Triangle> {
+    pub fn get_abc_w(&self, rd: &mut Gd<RenderingDevice>) -> Vec<Triangle> {
         self.get_t_abc(rd)
     }
 
     /// Computes center points of all triangles.
-    pub fn get_center_points(&self, rd: &mut RenderingDevice) -> Vec<Vector3> {
+    pub fn get_center_points(&self, rd: &mut Gd<RenderingDevice>) -> Vec<Vector3> {
         let pos = self.get_pos(rd);
         let abc = self.get_abc_unoptimized(rd);
         abc.iter()

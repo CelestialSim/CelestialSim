@@ -72,3 +72,4 @@ dotnet build
 
 - `godot-start-scene`: start Godot scenes through CLI and collect benchmark logs.
 - `godot-screenshot-scene`: generate a wrapper scene that captures viewport screenshot after N seconds, then run it through the logging script.
+- `compare-csharp-rust`: capture screenshots of matching C# and Rust scenes, then diff them pixel-by-pixel with Python to validate parity.

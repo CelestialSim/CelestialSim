@@ -4,12 +4,21 @@ use godot::prelude::*;
 mod algo;
 #[allow(dead_code)]
 mod buffer_info;
+mod celestial;
+mod compositor;
+#[cfg(test)]
+mod compare_run_algo_test;
 #[allow(dead_code)]
 mod compute_utils;
 #[allow(dead_code)]
-mod state;
+mod cpu_subdivide;
+mod debug_dump;
 #[allow(dead_code)]
 mod initial_state;
+#[allow(dead_code)]
+mod layers;
+#[allow(dead_code)]
+mod state;
 
 struct CelestialSimExtension;
 
