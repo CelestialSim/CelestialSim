@@ -8,7 +8,7 @@ StructuredBuffer<int3> t_abc;
 RWStructuredBuffer<int> t_divided;
 
 [[vk::binding(2, 0)]]
-ConstantBuffer<uint> n_tris_to_merge;
+ConstantBuffer<uint> n_tris;
 
 [[vk::binding(3, 0)]]
 StructuredBuffer<int> t_neigh_ab;
@@ -36,27 +36,21 @@ StructuredBuffer<int> t_c_t;
 StructuredBuffer<int> t_center_t;
 
 [[vk::binding(10, 0)]]
-StructuredBuffer<uint> idxs_to_merge;
-
-[[vk::binding(11, 0)]]
 RWStructuredBuffer<uint> t_to_merge_mask;
 
-[[vk::binding(12, 0)]]
-StructuredBuffer<float> tris_out;
-
-[[vk::binding(13, 0)]]
+[[vk::binding(11, 0)]]
 RWStructuredBuffer<int> t_deactivated;
 
-[[vk::binding(14, 0)]]
+[[vk::binding(12, 0)]]
 StructuredBuffer<uint> t_lv;
 
-[[vk::binding(15, 0)]]
+[[vk::binding(13, 0)]]
 StructuredBuffer<uint> v_to_update_mask;
 
-[[vk::binding(16, 0)]]
+[[vk::binding(14, 0)]]
 StructuredBuffer<float3> v_pos;
 
-[[vk::binding(17, 0)]]
+[[vk::binding(15, 0)]]
 StructuredBuffer<uint> t_parent;
 
 enum Edge
@@ -122,10 +116,12 @@ bool divided(uint idx)
 [numthreads(2, 1, 1)]
 void computeMain(uint3 DTid: SV_DispatchThreadID)
 {
-    if (DTid.x >= n_tris_to_merge)
+    if (DTid.x >= n_tris)
         return;
-    // DTid.x is starting from zero and increasing for each tris to merge
-    uint idx = idxs_to_merge[DTid.x];
+
+    uint idx = DTid.x;
+    if (t_to_merge_mask[idx] == 0u)
+        return;
 
     // The neigh of the tris are divided, so we can safely update them
     // if (t_lv[t_a_t[idx]] == t_lv[t_neigh_ab[t_a_t[idx]]])

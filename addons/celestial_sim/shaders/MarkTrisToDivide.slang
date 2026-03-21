@@ -43,7 +43,7 @@ StructuredBuffer<int> t_deactivated;
 
 // Mask for triangles that should be merged
 [[vk::binding(13, 0)]]
-RWStructuredBuffer<int> t_to_merge_mask;
+RWStructuredBuffer<uint> t_to_merge_mask;
 
 [[vk::binding(14, 0)]]
 StructuredBuffer<uint> t_parent;
@@ -158,7 +158,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
 
     // Initialize outputs
     t_to_div[idx] = 0;
-    t_to_merge_mask[idx] = 0;
+    t_to_merge_mask[idx] = 0u;
 
     // Skip if triangle is deactivated
     if (t_deactivated[idx] != 0)
@@ -170,7 +170,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     if (t_lv[idx] > max_divs)
     {
 
-        t_to_merge_mask[t_parent[idx]] = 1;
+        t_to_merge_mask[t_parent[idx]] = 1u;
         return;
     }
 
@@ -198,6 +198,6 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     // t_divided[idx] == 0 to divide only children
     if (parentScreenArea < (max_tri_size * 0.8f) && t_divided[t_parent[idx]] == 1)
     {
-        t_to_merge_mask[t_parent[idx]] = 1;
+        t_to_merge_mask[t_parent[idx]] = 1u;
     }
 }

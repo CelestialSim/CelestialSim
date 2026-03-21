@@ -108,7 +108,7 @@ impl CesState {
     }
 
     /// Reads the merge mask buffer back to CPU.
-    pub fn get_t_to_merge_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
+    pub fn get_t_to_merge_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<u32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_to_merge_mask)
     }
 
