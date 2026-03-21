@@ -179,6 +179,10 @@ impl INode3D for CesCelestialRust {
     }
 
     fn enter_tree(&mut self) {
+        self.is_shutting_down = false;
+        self.gen_mesh_running = false;
+        self.values_updated = true;
+
         let mut rs = RenderingServer::singleton();
         self.instance = rs.instance_create();
 
@@ -302,9 +306,13 @@ impl INode3D for CesCelestialRust {
             });
             match done_rx.recv_timeout(std::time::Duration::from_secs(2)) {
                 Ok(Ok(mut worker)) => {
-                    // Free the local RenderingDevice explicitly before engine teardown
+                    // Free GPU resources directly (not deferred) to avoid
+                    // RD clone panics when the device is being invalidated.
                     if let Some(ref mut gen) = worker.graph_generator {
-                        gen.dispose(&mut worker.rd);
+                        gen.dispose_direct(&mut worker.rd);
+                    }
+                    for layer in worker.layers.iter_mut() {
+                        layer.dispose_direct(&mut worker.rd);
                     }
                     worker.rd.free();
                 }

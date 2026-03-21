@@ -18,6 +18,10 @@ impl DivShader {
             pipeline: ComputePipeline::new(rd, SHADER_PATH),
         }
     }
+
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        self.pipeline.dispose_direct(rd);
+    }
 }
 
 /// Returns `[min(a,b), max(a,b)]`.

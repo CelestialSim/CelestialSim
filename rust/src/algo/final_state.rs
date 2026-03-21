@@ -20,6 +20,10 @@ impl FinalStateShader {
             pipeline: ComputePipeline::new(rd, SHADER_PATH),
         }
     }
+
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        self.pipeline.dispose_direct(rd);
+    }
 }
 
 /// GPU-side output buffers from the final compaction step.

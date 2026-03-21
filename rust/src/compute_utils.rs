@@ -2,7 +2,7 @@ use godot::builtin::{Callable, PackedByteArray, Variant, Vector3};
 use godot::classes::RdUniform;
 use godot::classes::{RenderingDevice, RenderingServer};
 use godot::obj::{Gd, NewGd, Singleton};
-use godot::prelude::{load, Array, Rid};
+use godot::prelude::{godot_warn, load, Array, Rid};
 
 use std::sync::Mutex;
 
@@ -193,18 +193,46 @@ impl ComputePipeline {
             rd.0.free_rid(uniform_set);
         });
     }
+
+    /// Frees shader and pipeline resources directly, marking them invalid
+    /// so `Drop` won't attempt cleanup through the (potentially freed) RD.
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        if self.pipeline.is_valid() {
+            rd.free_rid(self.pipeline);
+            self.pipeline = Rid::Invalid;
+        }
+        if self.shader.is_valid() {
+            rd.free_rid(self.shader);
+            self.shader = Rid::Invalid;
+        }
+    }
 }
 
 impl Drop for ComputePipeline {
     fn drop(&mut self) {
-        let rd_send = RdSend(self.rd.0.clone());
-        let shader = self.shader;
-        let pipeline = self.pipeline;
-        on_render_thread(move || {
-            let mut rd = rd_send;
-            rd.0.free_rid(pipeline);
-            rd.0.free_rid(shader);
-        });
+        if !self.shader.is_valid() && !self.pipeline.is_valid() {
+            return;
+        }
+        let rd_clone = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            RdSend(self.rd.0.clone())
+        }));
+        match rd_clone {
+            Ok(rd_send) => {
+                let shader = self.shader;
+                let pipeline = self.pipeline;
+                on_render_thread(move || {
+                    let mut rd = rd_send;
+                    rd.0.free_rid(pipeline);
+                    rd.0.free_rid(shader);
+                });
+            }
+            Err(_) => {
+                godot_warn!(
+                    "ComputePipeline::drop: RenderingDevice already freed; \
+                     shader/pipeline RIDs will leak"
+                );
+            }
+        }
     }
 }
 

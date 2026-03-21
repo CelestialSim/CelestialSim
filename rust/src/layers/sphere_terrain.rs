@@ -59,6 +59,12 @@ impl CesLayer for CesSphereTerrain {
             self.pipeline = Some(ComputePipeline::new(rd, SHADER_PATH));
         }
     }
+
+    fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        if let Some(ref mut pipeline) = self.pipeline {
+            pipeline.dispose_direct(rd);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -20,4 +20,8 @@ pub trait CesLayer: Send {
 
     /// Initialize the compute pipeline for this layer. Called once when state is created.
     fn init_pipeline(&mut self, rd: &mut Gd<RenderingDevice>);
+
+    /// Dispose GPU resources directly so `Drop` won't touch an already-freed RD.
+    /// Must be called before the owning RenderingDevice is freed.
+    fn dispose_direct(&mut self, _rd: &mut Gd<RenderingDevice>) {}
 }

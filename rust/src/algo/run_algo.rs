@@ -289,6 +289,33 @@ impl CesRunAlgo {
         }
         self.state = None;
     }
+
+    /// Frees all GPU resources directly (no deferred dispatch).
+    /// Use when the RenderingDevice will be freed immediately after.
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        if let Some(ref state) = self.state {
+            state.dispose_direct(rd);
+        }
+        self.state = None;
+        if let Some(ref mut s) = self.mark_tris_shader {
+            s.dispose_direct(rd);
+        }
+        if let Some(ref mut s) = self.update_neighbors_shader {
+            s.dispose_direct(rd);
+        }
+        if let Some(ref mut s) = self.div_shader {
+            s.dispose_direct(rd);
+        }
+        if let Some(ref mut s) = self.merge_shader {
+            s.dispose_direct(rd);
+        }
+        if let Some(ref mut s) = self.compact_shaders {
+            s.dispose_direct(rd);
+        }
+        if let Some(ref mut s) = self.final_state_shader {
+            s.dispose_direct(rd);
+        }
+    }
 }
 
 #[cfg(test)]

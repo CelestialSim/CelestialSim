@@ -20,6 +20,10 @@ impl MarkTrisShader {
         }
     }
 
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        self.pipeline.dispose_direct(rd);
+    }
+
     /// Dispatches the MarkTrisToDivide shader to flag triangles whose screen-space
     /// area exceeds `max_tri_size`. Mirrors C# `CesMarkTrisToDivide.FlagLargeTrisToDivide`.
     pub fn flag_large_tris_to_divide(

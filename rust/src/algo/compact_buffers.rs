@@ -30,6 +30,13 @@ impl CompactShaders {
         }
     }
 
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        self.compact_tris.dispose_direct(rd);
+        self.mark_active_verts.dispose_direct(rd);
+        self.compact_verts.dispose_direct(rd);
+        self.remap_tri_verts.dispose_direct(rd);
+    }
+
     /// Compacts deactivated triangles and unused vertices from the mesh buffers.
     /// Mirrors C# `CesCompactBuffers.Compact()`.
     ///

@@ -5,26 +5,13 @@
 
 ## Prerequisites
 
-- Godot with .NET support
-- .NET SDK 8.0+
-
-## Build the plugin
-
-From the repository root:
-
-```bash
-dotnet build
-```
-
+- Rust
 ## Build and preview the docs
 
 From the repository root:
 
 ```bash
-dotnet tool install -g docfx # or: dotnet tool update -g docfx
-~/.dotnet/tools/docfx metadata docs/docfx.json
-~/.dotnet/tools/docfx build docs/docfx.json
-~/.dotnet/tools/docfx serve docs/docfx/site
+cargo doc --manifest-path rust/Cargo.toml --no-deps --open
 ```
 
-`serve` starts a local docs server and prints the local URL in the terminal.
+This generates the Rust API reference and opens the local `rustdoc` site in your browser.

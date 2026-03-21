@@ -5,4 +5,4 @@
 - name: Getting Started
   href: getting-started.md
 - name: API reference
-  href: docfx/api/toc.yml
+  href: celestial_sim_rust/

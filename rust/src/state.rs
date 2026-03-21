@@ -82,6 +82,16 @@ impl CesState {
         }
     }
 
+    /// Frees all GPU buffers directly without deferred dispatch.
+    /// Use when the RenderingDevice will be freed immediately after.
+    pub fn dispose_direct(&self, rd: &mut Gd<RenderingDevice>) {
+        for rid in self.all_buffers() {
+            if rid.is_valid() {
+                rd.free_rid(rid);
+            }
+        }
+    }
+
     /// Updates the u_n_tris uniform buffer to match current n_tris value.
     pub fn sync_n_tris_buffer(&self, rd: &mut Gd<RenderingDevice>) {
         compute_utils::update_uniform_buffer(rd, &self.u_n_tris, &self.n_tris);

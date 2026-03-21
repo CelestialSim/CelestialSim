@@ -18,6 +18,10 @@ impl UpdateNeighborsShader {
         }
     }
 
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        self.pipeline.dispose_direct(rd);
+    }
+
     /// Dispatches the UpdateNeighbors shader. Mirrors C# `CesUpdateNeighbors.UpdateNeighbors()`.
     pub fn update_neighbors(&self, rd: &mut Gd<RenderingDevice>, state: &CesState) {
         let buffers: Vec<&BufferInfo> = vec![

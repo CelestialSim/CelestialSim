@@ -28,6 +28,10 @@ impl MergeShader {
         }
     }
 
+    pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
+        self.pipeline.dispose_direct(rd);
+    }
+
     /// Performs triangle merging. Mirrors C# `CesMergeLOD.MakeMerge()`.
     ///
     /// Returns the number of triangles merged (0 if nothing to merge).
