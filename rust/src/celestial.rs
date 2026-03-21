@@ -276,6 +276,17 @@ impl INode3D for CesCelestialRust {
     fn exit_tree(&mut self) {
         self.is_shutting_down = true;
 
+        // Free the RS instance and mesh FIRST so the planet disappears immediately
+        let mut rs = RenderingServer::singleton();
+        if self.instance.is_valid() {
+            rs.free_rid(self.instance);
+            self.instance = Rid::Invalid;
+        }
+        if let Some(ref mesh) = self.mesh {
+            rs.free_rid(mesh.get_rid());
+        }
+        self.mesh = None;
+
         // Drop the sender to signal the worker thread to exit
         drop(self.work_tx.take());
         self.result_rx = None;
@@ -302,16 +313,6 @@ impl INode3D for CesCelestialRust {
                 }
             }
         }
-
-        let mut rs = RenderingServer::singleton();
-        if self.instance.is_valid() {
-            rs.free_rid(self.instance);
-            self.instance = Rid::Invalid;
-        }
-        if let Some(ref mesh) = self.mesh {
-            rs.free_rid(mesh.get_rid());
-        }
-        self.mesh = None;
     }
 }
 
