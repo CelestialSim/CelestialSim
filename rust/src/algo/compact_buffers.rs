@@ -6,12 +6,12 @@ use crate::compute_utils;
 use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
-const COMPACT_TRIS_SHADER: &str = "res://addons/celestial_sim_rust/shaders/CompactTris.slang";
+const COMPACT_TRIS_SHADER: &str = "res://addons/celestial_sim/shaders/CompactTris.slang";
 const MARK_ACTIVE_VERTS_SHADER: &str =
-    "res://addons/celestial_sim_rust/shaders/MarkActiveVertices.slang";
-const COMPACT_VERTS_SHADER: &str = "res://addons/celestial_sim_rust/shaders/CompactVertices.slang";
+    "res://addons/celestial_sim/shaders/MarkActiveVertices.slang";
+const COMPACT_VERTS_SHADER: &str = "res://addons/celestial_sim/shaders/CompactVertices.slang";
 const REMAP_TRI_VERTS_SHADER: &str =
-    "res://addons/celestial_sim_rust/shaders/RemapTriangleVertices.slang";
+    "res://addons/celestial_sim/shaders/RemapTriangleVertices.slang";
 
 pub struct CompactShaders {
     compact_tris: ComputePipeline,

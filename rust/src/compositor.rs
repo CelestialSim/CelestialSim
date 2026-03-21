@@ -15,7 +15,7 @@ use crate::initial_state;
 use crate::state::CesState;
 
 const DRAW_SHADER_PATH: &str =
-    "res://addons/celestial_sim_rust/shaders/ces_final_state_compositor.glsl";
+    "res://addons/celestial_sim/shaders/ces_final_state_compositor.glsl";
 
 /// Compositor effect that renders CesState geometry in scene space.
 #[derive(GodotClass)]

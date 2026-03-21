@@ -1,5 +1,5 @@
 [package]
-name = "celestial_sim_rust"
+name = "celestial_sim"
 version = "0.1.0"
 edition = "2021"
 

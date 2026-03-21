@@ -159,9 +159,9 @@ jobs:
               </section>
 
               <section class="grid">
-                <a class="card api" href="./celestial_sim_rust/">
+                <a class="card api" href="./celestial_sim/">
                   <strong>Rust API reference</strong>
-                  <span>Browse the generated rustdoc for <code>celestial_sim_rust</code>.</span>
+                  <span>Browse the generated rustdoc for <code>celestial_sim</code>.</span>
                 </a>
                 <a class="card guides" href="${REPO_BLOB_URL}/docs/introduction.md">
                   <strong>Introduction guide</strong>

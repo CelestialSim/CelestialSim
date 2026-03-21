@@ -1,6 +1,6 @@
 [gd_scene format=3 uid="uid://rp61nbhi26o"]
 
-[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim_rust/shaders/show_level.gdshader" id="1_0ejjn"]
+[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/shaders/show_level.gdshader" id="1_0ejjn"]
 
 [node name="CelestialRustDemo" type="Node3D" unique_id=1187247285]
 
@@ -14,4 +14,4 @@ shader = ExtResource("1_0ejjn")
 transform = Transform3D(0.95235324, 0, -0.30499727, 0, 1, 0, 0.30499727, 0, 0.95235324, -1.0931649, -8.34465e-07, -0.69846606)
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=1793620556]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.00029718876, -8.34465e-07, -0.61704874)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.06972265, -8.34465e-07, -0.6761756)

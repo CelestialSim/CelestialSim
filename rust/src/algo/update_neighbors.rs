@@ -5,7 +5,7 @@ use crate::buffer_info::BufferInfo;
 use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
-const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/UpdateNeighbors.slang";
+const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/UpdateNeighbors.slang";
 
 pub struct UpdateNeighborsShader {
     pipeline: ComputePipeline,

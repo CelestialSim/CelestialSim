@@ -50,6 +50,6 @@ The documentation CI now publishes a small landing page plus the Rust API refere
 
 To build the Rust docs locally:
 1. Run `cargo doc --manifest-path rust/Cargo.toml --no-deps`;
-2. Open `rust/target/doc/celestial_sim_rust/index.html`.
+2. Open `rust/target/doc/celestial_sim/index.html`.
 
 To build and open the docs in one step, run `cargo doc --manifest-path rust/Cargo.toml --no-deps --open`.

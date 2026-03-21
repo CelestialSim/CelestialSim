@@ -6,7 +6,7 @@ use crate::state::CesState;
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
 
-const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/SphereTerrain.slang";
+const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/SphereTerrain.slang";
 
 pub struct CesSphereTerrain {
     radius: f32,

@@ -6,7 +6,7 @@ use crate::compute_utils;
 use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
-const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/MergeLOD.slang";
+const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/MergeLOD.slang";
 
 /// Extracts indices where the mask value is non-zero.
 fn extract_merge_indices(mask: &[i32]) -> Vec<u32> {

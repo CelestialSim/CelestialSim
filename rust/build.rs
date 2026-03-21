@@ -6,7 +6,7 @@ use std::process::Command;
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let shaders_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-        .join("../addons/celestial_sim_rust/shaders");
+        .join("../addons/celestial_sim/shaders");
 
     println!("cargo::rerun-if-changed={}", shaders_dir.display());
 

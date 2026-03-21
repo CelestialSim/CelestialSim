@@ -5,4 +5,4 @@
 - name: Getting Started
   href: getting-started.md
 - name: API reference
-  href: celestial_sim_rust/
+  href: celestial_sim/

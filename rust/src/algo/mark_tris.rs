@@ -7,7 +7,7 @@ use crate::compute_utils;
 use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
-const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/MarkTrisToDivide.slang";
+const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/MarkTrisToDivide.slang";
 
 pub struct MarkTrisShader {
     pipeline: ComputePipeline,

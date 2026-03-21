@@ -6,7 +6,7 @@ use crate::compute_utils;
 use crate::compute_utils::ComputePipeline;
 use crate::state::{CesState, Triangle};
 
-const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/DivideLOD.slang";
+const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/DivideLOD.slang";
 
 pub struct DivShader {
     pipeline: ComputePipeline,

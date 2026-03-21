@@ -8,7 +8,7 @@ use crate::compute_utils;
 use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
-const SHADER_PATH: &str = "res://addons/celestial_sim_rust/shaders/CreateFinalOutput.slang";
+const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/CreateFinalOutput.slang";
 
 pub struct FinalStateShader {
     pipeline: ComputePipeline,

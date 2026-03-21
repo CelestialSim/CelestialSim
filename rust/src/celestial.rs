@@ -411,7 +411,7 @@ impl CesCelestialRust {
         self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
-            godot_print!("Mesh Triangles: {}", triangle_count);
+            godot_print!("Mesh Triangles3: {}", triangle_count);
         }
 
         if self.generate_collision {
