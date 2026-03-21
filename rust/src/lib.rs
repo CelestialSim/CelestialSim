@@ -5,6 +5,7 @@ mod algo;
 #[allow(dead_code)]
 mod buffer_info;
 mod celestial;
+mod compositor;
 #[cfg(test)]
 mod compare_run_algo_test;
 #[allow(dead_code)]
