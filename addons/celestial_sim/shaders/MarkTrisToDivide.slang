@@ -27,28 +27,25 @@ ConstantBuffer<float> radius;
 [[vk::binding(8, 0)]]
 ConstantBuffer<float> max_tri_size;
 
-[[vk::binding(9, 0)]]
-RWStructuredBuffer<float> tris_size;
-
 // Neighbour triangles
-[[vk::binding(10, 0)]]
+[[vk::binding(9, 0)]]
 StructuredBuffer<int> t_neigh_ab;
 
-[[vk::binding(11, 0)]]
+[[vk::binding(10, 0)]]
 StructuredBuffer<int> t_neigh_bc;
 
-[[vk::binding(12, 0)]]
+[[vk::binding(11, 0)]]
 StructuredBuffer<int> t_neigh_ca;
 
 // Deactivated triangles mask
-[[vk::binding(13, 0)]]
+[[vk::binding(12, 0)]]
 StructuredBuffer<int> t_deactivated;
 
 // Mask for triangles that should be merged
-[[vk::binding(14, 0)]]
+[[vk::binding(13, 0)]]
 RWStructuredBuffer<int> t_to_merge_mask;
 
-[[vk::binding(15, 0)]]
+[[vk::binding(14, 0)]]
 StructuredBuffer<uint> t_parent;
 
 // Camera parameters from viewport settings
@@ -180,9 +177,6 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     float screenArea = calculateScreenArea(idx);
     if (t_lv[idx] < max_divs)
     {
-        // Calculate screen area
-        tris_size[idx] = screenArea;
-
         // Check if triangle is large enough to divide
         t_to_div[idx] = screenArea > max_tri_size;
     }

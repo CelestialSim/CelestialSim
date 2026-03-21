@@ -297,8 +297,7 @@ pub fn sum_array_in_place(arr: &mut [i32], invert: bool) {
 
 fn create_storage_buffer_from_bytes(rd: &mut Gd<RenderingDevice>, bytes: &[u8]) -> BufferInfo {
     let len = bytes.len() as u32;
-    let mut pba = PackedByteArray::new();
-    pba.extend(bytes.iter().copied());
+    let pba = PackedByteArray::from(bytes);
     let rid = rd.storage_buffer_create_ex(len).data(&pba).done();
     assert!(rid.is_valid(), "Failed to create storage buffer");
     BufferInfo::new_storage(rid, len, len)

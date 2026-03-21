@@ -35,10 +35,6 @@ impl MarkTrisShader {
         radius: f32,
         max_tri_size: f32,
     ) {
-        // Temporary storage buffer for per-triangle sizes
-        let tris_size =
-            compute_utils::create_storage_buffer(rd, &vec![0.0f32; state.n_tris as usize]);
-
         // Uniform buffers for shader parameters
         let camera_pos_arr: [f32; 3] = [camera_pos.x, camera_pos.y, camera_pos.z];
         let camera_pos_buf = compute_utils::create_uniform_buffer(rd, &camera_pos_arr);
@@ -56,19 +52,17 @@ impl MarkTrisShader {
             &max_divs_buf,           // 6
             &radius_buf,             // 7
             &max_tri_size_buf,       // 8
-            &tris_size,              // 9
-            &state.t_neight_ab,      // 10
-            &state.t_neight_bc,      // 11
-            &state.t_neight_ca,      // 12
-            &state.t_deactivated,    // 13
-            &state.t_to_merge_mask,  // 14
-            &state.t_parent,         // 15
+            &state.t_neight_ab,      // 9
+            &state.t_neight_bc,      // 10
+            &state.t_neight_ca,      // 11
+            &state.t_deactivated,    // 12
+            &state.t_to_merge_mask,  // 13
+            &state.t_parent,         // 14
         ];
 
         self.pipeline.dispatch(rd, &buffers, state.n_tris);
 
         // Free temporary buffers
-        compute_utils::free_rid_on_render_thread(rd, tris_size.rid);
         compute_utils::free_rid_on_render_thread(rd, camera_pos_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, max_divs_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, radius_buf.rid);
