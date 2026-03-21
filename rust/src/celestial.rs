@@ -31,7 +31,7 @@ struct MeshResult {
     pos: Vec<Vector3>,
     normals: Vec<Vector3>,
     triangles: Vec<i32>,
-    sim_value: Vec<[f32; 2]>,
+    uv: Vec<Vector2>,
 }
 
 #[derive(Clone)]
@@ -367,17 +367,14 @@ impl CesCelestialRust {
             pos,
             normals,
             triangles,
-            sim_value,
+            uv,
         } = result;
         let triangle_count = triangles.len() / 3;
 
         let packed_verts = PackedVector3Array::from(pos);
         let packed_normals = PackedVector3Array::from(normals);
         let packed_indices = PackedInt32Array::from(triangles);
-        let packed_uvs: PackedVector2Array = sim_value
-            .into_iter()
-            .map(|uv| Vector2::new(uv[0], uv[1]))
-            .collect();
+        let packed_uvs: PackedVector2Array = PackedVector2Array::from(uv);
 
         let mut surface_array = varray![];
         surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
@@ -474,7 +471,7 @@ impl CesCelestialRust {
                         pos: vec![],
                         normals: vec![],
                         triangles: vec![],
-                        sim_value: vec![],
+                        uv: vec![],
                     });
                     continue;
                 }
@@ -483,7 +480,7 @@ impl CesCelestialRust {
                     pos: gen.pos.clone(),
                     normals: gen.normals.clone(),
                     triangles: gen.triangles.clone(),
-                    sim_value: gen.sim_value.clone(),
+                    uv: gen.uv.clone(),
                 };
 
                 if result_tx.send(result).is_err() {

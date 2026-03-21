@@ -1,4 +1,4 @@
-use godot::builtin::Vector3;
+use godot::builtin::{Vector2, Vector3};
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
 use godot::prelude::godot_print;
@@ -107,7 +107,7 @@ pub struct CesRunAlgo {
     pub pos: Vec<Vector3>,
     pub normals: Vec<Vector3>,
     pub triangles: Vec<i32>,
-    pub sim_value: Vec<[f32; 2]>,
+    pub uv: Vec<Vector2>,
     mark_tris_shader: Option<MarkTrisShader>,
     update_neighbors_shader: Option<UpdateNeighborsShader>,
     div_shader: Option<DivShader>,
@@ -123,7 +123,7 @@ impl CesRunAlgo {
             pos: vec![],
             normals: vec![],
             triangles: vec![],
-            sim_value: vec![],
+            uv: vec![],
             mark_tris_shader: None,
             update_neighbors_shader: None,
             div_shader: None,
@@ -274,7 +274,7 @@ impl CesRunAlgo {
         self.pos = final_output.pos;
         self.normals = final_output.normals;
         self.triangles = final_output.tris;
-        self.sim_value = final_output.color;
+        self.uv = final_output.color;
 
         timings.total = total_start.elapsed();
         if config.show_debug_messages {
@@ -343,6 +343,6 @@ mod tests {
         assert!(algo.pos.is_empty());
         assert!(algo.normals.is_empty());
         assert!(algo.triangles.is_empty());
-        assert!(algo.sim_value.is_empty());
+        assert!(algo.uv.is_empty());
     }
 }

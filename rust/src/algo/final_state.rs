@@ -1,4 +1,4 @@
-use godot::builtin::Vector3;
+use godot::builtin::{Vector2, Vector3};
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
 use godot::prelude::godot_print;
@@ -37,7 +37,7 @@ pub struct GpuFinalOutput {
 /// CPU-side final mesh output.
 pub struct FinalOutput {
     pub tris: Vec<i32>,
-    pub color: Vec<[f32; 2]>,
+    pub color: Vec<Vector2>,
     pub normals: Vec<Vector3>,
     pub pos: Vec<Vector3>,
 }
@@ -169,8 +169,8 @@ pub fn read_final_output_to_cpu(
     let tris: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, tris_buf);
     let color_floats: Vec<f32> = compute_utils::convert_buffer_to_vec(rd, color_buf);
 
-    let color: Vec<[f32; 2]> = (0..vertex_count)
-        .map(|i| [color_floats[i * 2], color_floats[i * 2 + 1]])
+    let color: Vec<Vector2> = (0..vertex_count)
+        .map(|i| Vector2::new(color_floats[i * 2], color_floats[i * 2 + 1]))
         .collect();
 
     let normals = vec![Vector3::ZERO; pos.len()];
@@ -235,14 +235,14 @@ mod tests {
 
     #[test]
     fn test_color_float_to_pairs() {
-        // Test that color float array -> [f32; 2] pairs works correctly
+        // Test that color float array -> Vector2 values works correctly
         let color_floats: Vec<f32> = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0];
         let vertex_count = 3usize;
-        let color: Vec<[f32; 2]> = (0..vertex_count)
-            .map(|i| [color_floats[i * 2], color_floats[i * 2 + 1]])
+        let color: Vec<Vector2> = (0..vertex_count)
+            .map(|i| Vector2::new(color_floats[i * 2], color_floats[i * 2 + 1]))
             .collect();
-        assert_eq!(color[0], [1.0, 0.0]);
-        assert_eq!(color[1], [2.0, 0.0]);
-        assert_eq!(color[2], [3.0, 0.0]);
+        assert_eq!(color[0], Vector2::new(1.0, 0.0));
+        assert_eq!(color[1], Vector2::new(2.0, 0.0));
+        assert_eq!(color[2], Vector2::new(3.0, 0.0));
     }
 }
