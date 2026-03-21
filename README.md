@@ -46,8 +46,10 @@ godot Tests/scene_name.tscn --quit-after 3
 
 # Documentation
 
-To build the docs locally:
-1. Install/update DocFX: `dotnet tool install -g docfx` (or `dotnet tool update -g docfx`);
-2. Generate API YAML: `~/.dotnet/tools/docfx metadata docs/docfx.json`;
-3. Build the site: `~/.dotnet/tools/docfx build docs/docfx.json`;
-4. Preview locally: `~/.dotnet/tools/docfx serve docs/docfx/site`.
+The documentation CI now publishes a small landing page plus the Rust API reference generated from `cargo doc`.
+
+To build the Rust docs locally:
+1. Run `cargo doc --manifest-path rust/Cargo.toml --no-deps`;
+2. Open `rust/target/doc/celestial_sim/index.html`.
+
+To build and open the docs in one step, run `cargo doc --manifest-path rust/Cargo.toml --no-deps --open`.

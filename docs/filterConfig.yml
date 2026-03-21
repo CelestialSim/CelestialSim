@@ -1,5 +1,0 @@
-apiRules:
-  - exclude:
-      uidRegex: ^Global\.
-  - exclude:
-      uidRegex: ^CelestialSim\..*\.(MethodName|PropertyName|SignalName)$

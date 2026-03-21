@@ -1,0 +1,33 @@
+[gd_scene format=3 uid="uid://dqr8y2kt5xfp1"]
+
+[sub_resource type="Environment" id="Environment_1"]
+
+[sub_resource type="CesFinalStateCompositorRust" id="CompositorEffect_rust"]
+resource_local_to_scene = false
+resource_name = ""
+enabled = true
+effect_callback_type = 4
+access_resolved_color = true
+access_resolved_depth = true
+needs_motion_vectors = false
+needs_normal_roughness = false
+target_path = NodePath("")
+target_position = Vector3(0, 0, 0)
+radius = 1.028
+ambient_strength = 0.041
+sphere_color = Color(0.092422, 0.21441105, 0.14641726, 1)
+
+[sub_resource type="Compositor" id="Compositor_1"]
+compositor_effects = Array[CompositorEffect]([SubResource("CompositorEffect_rust")])
+
+[node name="CompositorTestRust" type="Node3D"]
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.6515899, -0.7546339, -0.07719192, 0.32062975, 0.18175885, 0.9296026, -0.68747896, -0.6304697, 0.36039057, 0, 5, 0)
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_1")
+compositor = SubResource("Compositor_1")

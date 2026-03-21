@@ -11,4 +11,4 @@ Use this documentation to understand the rendering pipeline, configure the plugi
 
 - [Introduction](introduction.md)
 - [Getting Started](getting-started.md)
-- [API reference](docfx/api/toc.yml)
+- [Rust API reference](celestial_sim/)

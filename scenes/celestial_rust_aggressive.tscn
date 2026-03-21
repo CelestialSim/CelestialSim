@@ -1,0 +1,14 @@
+[gd_scene format=3 uid="uid://diyw2paq4tpc7"]
+
+[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/shaders/show_level.gdshader" id="1_shader"]
+
+[node name="CelestialRustDemo" type="Node3D" unique_id=1187247285]
+
+[node name="Planet" type="CesCelestialRust" parent="." unique_id=2104951423]
+subdivisions = 10
+triangle_screen_size = 0.01
+show_debug_messages = true
+shader = ExtResource("1_shader")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1793620556]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
