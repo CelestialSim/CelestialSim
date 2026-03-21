@@ -225,9 +225,7 @@ impl INode3D for CesCelestialRust {
             }
         }
 
-        let _process_timer =
-            ScopedTimer::new("CesCelestialRust::process", show_timer);
-
+        let _process_timer = ScopedTimer::new("CesCelestialRust::process", show_timer);
 
         let global_transform = self.base().get_global_transform();
         let mut rs = RenderingServer::singleton();
@@ -458,7 +456,7 @@ impl CesCelestialRust {
                 }
 
                 let gen = worker.graph_generator.as_mut().unwrap();
-                gen.update_triangle_graph(
+                let output = gen.update_triangle_graph(
                     &mut worker.rd,
                     cam_local,
                     &algo_config,
@@ -466,7 +464,7 @@ impl CesCelestialRust {
                     false,
                 );
 
-                if gen.pos.is_empty() || gen.triangles.is_empty() {
+                if output.pos.is_empty() || output.tris.is_empty() {
                     let _ = result_tx.send(MeshResult {
                         pos: vec![],
                         normals: vec![],
@@ -477,10 +475,10 @@ impl CesCelestialRust {
                 }
 
                 let result = MeshResult {
-                    pos: gen.pos.clone(),
-                    normals: gen.normals.clone(),
-                    triangles: gen.triangles.clone(),
-                    uv: gen.uv.clone(),
+                    pos: output.pos,
+                    normals: output.normals,
+                    triangles: output.tris,
+                    uv: output.uv,
                 };
 
                 if result_tx.send(result).is_err() {

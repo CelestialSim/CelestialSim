@@ -1,4 +1,4 @@
-use godot::builtin::{Callable, PackedByteArray, Variant, Vector3};
+use godot::builtin::{Callable, PackedByteArray, Variant, Vector2, Vector3};
 use godot::classes::RdUniform;
 use godot::classes::{RenderingDevice, RenderingServer};
 use godot::obj::{Gd, NewGd, Singleton};
@@ -213,9 +213,8 @@ impl Drop for ComputePipeline {
         if !self.shader.is_valid() && !self.pipeline.is_valid() {
             return;
         }
-        let rd_clone = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            RdSend(self.rd.0.clone())
-        }));
+        let rd_clone =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| RdSend(self.rd.0.clone())));
         match rd_clone {
             Ok(rd_send) => {
                 let shader = self.shader;
@@ -274,6 +273,48 @@ pub fn convert_v4_buffer_to_vec3(
         ));
     }
     result
+}
+
+/// Reads a packed float buffer (xyzxyz...) and reinterprets it as Vec<Vector3>.
+///
+/// This is a forced cast path and assumes Godot `real` is `f32` for Vector3.
+pub fn convert_packed_f32_buffer_to_vec3(
+    rd: &mut Gd<RenderingDevice>,
+    buffer: &BufferInfo,
+) -> Vec<Vector3> {
+    let float_data: Vec<f32> = convert_buffer_to_vec(rd, buffer);
+    let num_vectors = float_data.len() / 3;
+
+    assert_eq!(
+        std::mem::size_of::<Vector3>(),
+        3 * std::mem::size_of::<f32>()
+    );
+    assert_eq!(std::mem::align_of::<Vector3>(), std::mem::align_of::<f32>());
+
+    unsafe {
+        std::slice::from_raw_parts(float_data.as_ptr() as *const Vector3, num_vectors).to_vec()
+    }
+}
+
+/// Reads a packed float buffer (uvuv...) and reinterprets it as Vec<Vector2>.
+///
+/// This is a forced cast path and assumes Godot `real` is `f32` for Vector2.
+pub fn convert_packed_f32_buffer_to_vec2(
+    rd: &mut Gd<RenderingDevice>,
+    buffer: &BufferInfo,
+) -> Vec<Vector2> {
+    let float_data: Vec<f32> = convert_buffer_to_vec(rd, buffer);
+    let num_vectors = float_data.len() / 2;
+
+    assert_eq!(
+        std::mem::size_of::<Vector2>(),
+        2 * std::mem::size_of::<f32>()
+    );
+    assert_eq!(std::mem::align_of::<Vector2>(), std::mem::align_of::<f32>());
+
+    unsafe {
+        std::slice::from_raw_parts(float_data.as_ptr() as *const Vector2, num_vectors).to_vec()
+    }
 }
 
 /// CPU prefix sum in-place.

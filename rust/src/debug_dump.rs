@@ -40,24 +40,24 @@ impl INode for CesDumpSubdivisionRust {
 
         // Camera far away; triangle_screen_size=0 forces all subdivisions
         let cam_local = Vector3::new(0.0, 0.0, 100.0);
-        algo.update_triangle_graph(&mut rd, cam_local, &config, &mut layers, false);
+        let output = algo.update_triangle_graph(&mut rd, cam_local, &config, &mut layers, false);
 
         godot_print!(
             "[DUMP_RUST] pos={} tris={}",
-            algo.pos.len(),
-            algo.triangles.len()
+            output.pos.len(),
+            output.tris.len()
         );
 
         // Build JSON
         let mut json = String::from("{\n  \"vertices\": [\n");
-        for (i, v) in algo.pos.iter().enumerate() {
+        for (i, v) in output.pos.iter().enumerate() {
             if i > 0 {
                 json.push_str(",\n");
             }
             json.push_str(&format!("    [{}, {}, {}]", v.x, v.y, v.z));
         }
         json.push_str("\n  ],\n  \"triangles\": [");
-        for (i, &idx) in algo.triangles.iter().enumerate() {
+        for (i, idx) in output.tris.iter().enumerate() {
             if i > 0 {
                 json.push(',');
             }

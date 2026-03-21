@@ -30,14 +30,14 @@ impl FinalStateShader {
 pub struct GpuFinalOutput {
     pub pos: Option<BufferInfo>,
     pub tris: Option<BufferInfo>,
-    pub color: Option<BufferInfo>,
+    pub uv: Option<BufferInfo>,
     pub n_visible_tris: u32,
 }
 
 /// CPU-side final mesh output.
 pub struct FinalOutput {
     pub tris: Vec<i32>,
-    pub color: Vec<Vector2>,
+    pub uv: Vec<Vector2>,
     pub normals: Vec<Vector3>,
     pub pos: Vec<Vector3>,
 }
@@ -90,7 +90,7 @@ pub fn create_final_output_gpu(
         return GpuFinalOutput {
             pos: None,
             tris: None,
-            color: None,
+            uv: None,
             n_visible_tris,
         };
     }
@@ -100,13 +100,13 @@ pub fn create_final_output_gpu(
     let vertex_count = n_visible_tris * 3;
     let out_pos = compute_utils::create_empty_storage_buffer(
         rd,
-        vertex_count * 4 * std::mem::size_of::<f32>() as u32,
+        vertex_count * 3 * std::mem::size_of::<f32>() as u32,
     );
     let out_tris = compute_utils::create_empty_storage_buffer(
         rd,
         vertex_count * std::mem::size_of::<i32>() as u32,
     );
-    let out_color = compute_utils::create_empty_storage_buffer(
+    let out_uv = compute_utils::create_empty_storage_buffer(
         rd,
         vertex_count * 2 * std::mem::size_of::<f32>() as u32,
     );
@@ -125,7 +125,7 @@ pub fn create_final_output_gpu(
         &visible_prefix_buffer, // 8
         &out_pos,               // 9
         &out_tris,              // 10
-        &out_color,             // 11
+        &out_uv,                // 11
         &state.u_n_tris,        // 12
         &n_visible_buf,         // 13
     ];
@@ -139,7 +139,7 @@ pub fn create_final_output_gpu(
     GpuFinalOutput {
         pos: Some(out_pos),
         tris: Some(out_tris),
-        color: Some(out_color),
+        uv: Some(out_uv),
         n_visible_tris,
     }
 }
@@ -155,7 +155,7 @@ pub fn read_final_output_to_cpu(
     if vertex_count == 0 {
         return FinalOutput {
             tris: vec![],
-            color: vec![],
+            uv: vec![],
             normals: vec![],
             pos: vec![],
         };
@@ -163,15 +163,11 @@ pub fn read_final_output_to_cpu(
 
     let pos_buf = gpu_output.pos.as_ref().unwrap();
     let tris_buf = gpu_output.tris.as_ref().unwrap();
-    let color_buf = gpu_output.color.as_ref().unwrap();
+    let uv_buf = gpu_output.uv.as_ref().unwrap();
 
-    let pos = compute_utils::convert_v4_buffer_to_vec3(rd, pos_buf);
     let tris: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, tris_buf);
-    let color_floats: Vec<f32> = compute_utils::convert_buffer_to_vec(rd, color_buf);
-
-    let color: Vec<Vector2> = (0..vertex_count)
-        .map(|i| Vector2::new(color_floats[i * 2], color_floats[i * 2 + 1]))
-        .collect();
+    let pos: Vec<Vector3> = compute_utils::convert_packed_f32_buffer_to_vec3(rd, pos_buf);
+    let uv: Vec<Vector2> = compute_utils::convert_packed_f32_buffer_to_vec2(rd, uv_buf);
 
     let normals = vec![Vector3::ZERO; pos.len()];
 
@@ -182,14 +178,14 @@ pub fn read_final_output_to_cpu(
         if let Some(ref b) = gpu_output.tris {
             compute_utils::free_rid_on_render_thread(rd, b.rid);
         }
-        if let Some(ref b) = gpu_output.color {
+        if let Some(ref b) = gpu_output.uv {
             compute_utils::free_rid_on_render_thread(rd, b.rid);
         }
     }
 
     FinalOutput {
         tris,
-        color,
+        uv,
         normals,
         pos,
     }
@@ -225,7 +221,7 @@ mod tests {
     fn test_empty_final_output() {
         let output = FinalOutput {
             tris: vec![],
-            color: vec![],
+            uv: vec![],
             normals: vec![],
             pos: vec![],
         };
@@ -234,15 +230,15 @@ mod tests {
     }
 
     #[test]
-    fn test_color_float_to_pairs() {
-        // Test that color float array -> Vector2 values works correctly
-        let color_floats: Vec<f32> = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0];
+    fn test_uv_float_to_pairs() {
+        // Test that UV float array -> Vector2 values works correctly
+        let uv_floats: Vec<f32> = vec![1.0, 0.0, 2.0, 0.0, 3.0, 0.0];
         let vertex_count = 3usize;
-        let color: Vec<Vector2> = (0..vertex_count)
-            .map(|i| Vector2::new(color_floats[i * 2], color_floats[i * 2 + 1]))
+        let uv: Vec<Vector2> = (0..vertex_count)
+            .map(|i| Vector2::new(uv_floats[i * 2], uv_floats[i * 2 + 1]))
             .collect();
-        assert_eq!(color[0], Vector2::new(1.0, 0.0));
-        assert_eq!(color[1], Vector2::new(2.0, 0.0));
-        assert_eq!(color[2], Vector2::new(3.0, 0.0));
+        assert_eq!(uv[0], Vector2::new(1.0, 0.0));
+        assert_eq!(uv[1], Vector2::new(2.0, 0.0));
+        assert_eq!(uv[2], Vector2::new(3.0, 0.0));
     }
 }

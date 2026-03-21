@@ -1,4 +1,4 @@
-use godot::builtin::{Vector2, Vector3};
+use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
 use godot::prelude::godot_print;
@@ -104,10 +104,6 @@ impl AlgoTimingTotals {
 /// Mirrors C# `CesRunAlgo`.
 pub struct CesRunAlgo {
     pub state: Option<CesState>,
-    pub pos: Vec<Vector3>,
-    pub normals: Vec<Vector3>,
-    pub triangles: Vec<i32>,
-    pub uv: Vec<Vector2>,
     mark_tris_shader: Option<MarkTrisShader>,
     update_neighbors_shader: Option<UpdateNeighborsShader>,
     div_shader: Option<DivShader>,
@@ -120,10 +116,6 @@ impl CesRunAlgo {
     pub fn new() -> Self {
         Self {
             state: None,
-            pos: vec![],
-            normals: vec![],
-            triangles: vec![],
-            uv: vec![],
             mark_tris_shader: None,
             update_neighbors_shader: None,
             div_shader: None,
@@ -160,7 +152,7 @@ impl CesRunAlgo {
         config: &RunAlgoConfig,
         layers: &mut [Box<dyn CesLayer>],
         skip_auto_division_marking: bool,
-    ) {
+    ) -> final_state::FinalOutput {
         let total_start = Instant::now();
         let mut timings = AlgoTimingTotals {
             total: Duration::ZERO,
@@ -271,15 +263,13 @@ impl CesRunAlgo {
             self.final_state_shader.as_ref().unwrap(),
         );
         timings.final_output += final_start.elapsed();
-        self.pos = final_output.pos;
-        self.normals = final_output.normals;
-        self.triangles = final_output.tris;
-        self.uv = final_output.color;
 
         timings.total = total_start.elapsed();
         if config.show_debug_messages {
             timings.print_summary();
         }
+
+        final_output
     }
 
     /// Frees all GPU resources held by the state.
@@ -340,9 +330,5 @@ mod tests {
     fn test_run_algo_initial_state() {
         let algo = CesRunAlgo::new();
         assert!(algo.state.is_none());
-        assert!(algo.pos.is_empty());
-        assert!(algo.normals.is_empty());
-        assert!(algo.triangles.is_empty());
-        assert!(algo.uv.is_empty());
     }
 }

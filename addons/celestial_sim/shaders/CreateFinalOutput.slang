@@ -26,13 +26,13 @@ StructuredBuffer<int> visible_mask;
 StructuredBuffer<int> visible_prefix;
 
 [[vk::binding(9, 0)]]
-RWStructuredBuffer<float4> out_pos;
+RWStructuredBuffer<float> out_pos;
 
 [[vk::binding(10, 0)]]
 RWStructuredBuffer<int> out_tris;
 
 [[vk::binding(11, 0)]]
-RWStructuredBuffer<float2> out_color;
+RWStructuredBuffer<float> out_uv;
 
 [[vk::binding(12, 0)]]
 ConstantBuffer<uint> n_tris;
@@ -40,12 +40,27 @@ ConstantBuffer<uint> n_tris;
 [[vk::binding(13, 0)]]
 ConstantBuffer<uint> n_visible_tris;
 
-float4 Midpoint(int v0, int v1)
+float3 Midpoint(int v0, int v1)
 {
-    return (v_pos[v0] + v_pos[v1]) * 0.5f;
+    return (v_pos[v0].xyz + v_pos[v1].xyz) * 0.5f;
 }
 
-void StitchEdge(int tri_idx, uint out_idx, int neigh_idx, int parent_v0, int parent_v1)
+void WritePos(uint vertex_idx, float3 p)
+{
+    uint base = vertex_idx * 3u;
+    out_pos[base + 0u] = p.x;
+    out_pos[base + 1u] = p.y;
+    out_pos[base + 2u] = p.z;
+}
+
+void WriteUv(uint vertex_idx, float2 uv)
+{
+    uint base = vertex_idx * 2u;
+    out_uv[base + 0u] = uv.x;
+    out_uv[base + 1u] = uv.y;
+}
+
+void StitchEdge(int tri_idx, uint out_vertex_idx, int neigh_idx, int parent_v0, int parent_v1)
 {
     if (neigh_idx < 0 || (uint)neigh_idx >= n_tris)
     {
@@ -57,7 +72,7 @@ void StitchEdge(int tri_idx, uint out_idx, int neigh_idx, int parent_v0, int par
         return;
     }
 
-    out_pos[out_idx] = Midpoint(parent_v0, parent_v1);
+    WritePos(out_vertex_idx, Midpoint(parent_v0, parent_v1));
 }
 
 [shader("compute")]
@@ -91,18 +106,18 @@ void computeMain(uint3 DTid : SV_DispatchThreadID)
         parent_tri = t_abc[parent_idx];
     }
 
-    out_pos[base_idx + 0] = v_pos[tri.x];
-    out_pos[base_idx + 1] = v_pos[tri.y];
-    out_pos[base_idx + 2] = v_pos[tri.z];
+    WritePos(base_idx + 0u, v_pos[tri.x].xyz);
+    WritePos(base_idx + 1u, v_pos[tri.y].xyz);
+    WritePos(base_idx + 2u, v_pos[tri.z].xyz);
 
     out_tris[base_idx + 0] = (int)(base_idx + 0);
     out_tris[base_idx + 1] = (int)(base_idx + 1);
     out_tris[base_idx + 2] = (int)(base_idx + 2);
 
     float level = (float)t_lv[idx];
-    out_color[base_idx + 0] = float2(level, 0.0f);
-    out_color[base_idx + 1] = float2(level, 0.0f);
-    out_color[base_idx + 2] = float2(level, 0.0f);
+    WriteUv(base_idx + 0u, float2(level, 0.0f));
+    WriteUv(base_idx + 1u, float2(level, 0.0f));
+    WriteUv(base_idx + 2u, float2(level, 0.0f));
 
     bool is_a_tris = parent_tri.x == tri.x;
     bool is_b_tris = parent_tri.y == tri.y;
