@@ -22,6 +22,7 @@ pub struct CesState {
     pub n_tris: u32,
     pub n_verts: u32,
     pub n_deactivated_tris: u32,
+    pub n_divided: u32,
     pub start_idx: u32,
 
     // 17 buffer fields
@@ -108,7 +109,7 @@ impl CesState {
     }
 
     /// Reads the merge mask buffer back to CPU.
-    pub fn get_t_to_merge_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<i32> {
+    pub fn get_t_to_merge_mask(&self, rd: &mut Gd<RenderingDevice>) -> Vec<u32> {
         compute_utils::convert_buffer_to_vec(rd, &self.t_to_merge_mask)
     }
 

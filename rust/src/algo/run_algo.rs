@@ -104,10 +104,6 @@ impl AlgoTimingTotals {
 /// Mirrors C# `CesRunAlgo`.
 pub struct CesRunAlgo {
     pub state: Option<CesState>,
-    pub pos: Vec<Vector3>,
-    pub normals: Vec<Vector3>,
-    pub triangles: Vec<i32>,
-    pub sim_value: Vec<[f32; 2]>,
     mark_tris_shader: Option<MarkTrisShader>,
     update_neighbors_shader: Option<UpdateNeighborsShader>,
     div_shader: Option<DivShader>,
@@ -120,10 +116,6 @@ impl CesRunAlgo {
     pub fn new() -> Self {
         Self {
             state: None,
-            pos: vec![],
-            normals: vec![],
-            triangles: vec![],
-            sim_value: vec![],
             mark_tris_shader: None,
             update_neighbors_shader: None,
             div_shader: None,
@@ -160,7 +152,7 @@ impl CesRunAlgo {
         config: &RunAlgoConfig,
         layers: &mut [Box<dyn CesLayer>],
         skip_auto_division_marking: bool,
-    ) {
+    ) -> final_state::FinalOutput {
         let total_start = Instant::now();
         let mut timings = AlgoTimingTotals {
             total: Duration::ZERO,
@@ -198,9 +190,11 @@ impl CesRunAlgo {
             first_run = false;
             timings.iterations += 1;
 
+            let n_to_divide;
+            let n_to_merge;
             if !skip_auto_division_marking {
                 let mark_start = Instant::now();
-                self.mark_tris_shader
+                let mark_counts = self.mark_tris_shader
                     .as_ref()
                     .unwrap()
                     .flag_large_tris_to_divide(
@@ -211,7 +205,17 @@ impl CesRunAlgo {
                         config.radius,
                         config.triangle_screen_size,
                     );
+                n_to_divide = mark_counts.n_to_divide;
+                n_to_merge = mark_counts.n_to_merge;
+                state.n_divided = mark_counts.n_divided;
+                state.n_deactivated_tris = mark_counts.n_deactivated;
                 timings.mark += mark_start.elapsed();
+            } else {
+                // When marking is skipped (test/manual paths), count from the GPU mask
+                let mask = state.get_t_to_divide_mask(rd);
+                n_to_divide = mask.iter().filter(|&&x| x != 0).count() as u32;
+                // No mark counts available; use n_tris as upper bound so merge is never skipped
+                n_to_merge = state.n_tris;
             }
 
             let divide_start = Instant::now();
@@ -219,7 +223,7 @@ impl CesRunAlgo {
                 self.div_shader
                     .as_ref()
                     .unwrap()
-                    .make_div(rd, state, config.precise_normals);
+                    .make_div(rd, state, config.precise_normals, n_to_divide);
             timings.divide += divide_start.elapsed();
             if n_tris_added > 0 {
                 state.sync_n_tris_buffer(rd);
@@ -230,7 +234,7 @@ impl CesRunAlgo {
             }
 
             let merge_start = Instant::now();
-            n_tris_merged = self.merge_shader.as_ref().unwrap().make_merge(rd, state);
+            n_tris_merged = self.merge_shader.as_ref().unwrap().make_merge(rd, state, n_to_merge);
             timings.merge += merge_start.elapsed();
             if n_tris_merged > 0 && config.show_debug_messages {
                 godot_print!(
@@ -271,15 +275,13 @@ impl CesRunAlgo {
             self.final_state_shader.as_ref().unwrap(),
         );
         timings.final_output += final_start.elapsed();
-        self.pos = final_output.pos;
-        self.normals = final_output.normals;
-        self.triangles = final_output.tris;
-        self.sim_value = final_output.color;
 
         timings.total = total_start.elapsed();
         if config.show_debug_messages {
             timings.print_summary();
         }
+
+        final_output
     }
 
     /// Frees all GPU resources held by the state.
@@ -340,9 +342,5 @@ mod tests {
     fn test_run_algo_initial_state() {
         let algo = CesRunAlgo::new();
         assert!(algo.state.is_none());
-        assert!(algo.pos.is_empty());
-        assert!(algo.normals.is_empty());
-        assert!(algo.triangles.is_empty());
-        assert!(algo.sim_value.is_empty());
     }
 }

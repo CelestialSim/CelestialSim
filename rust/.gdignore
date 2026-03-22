@@ -1,0 +1,2 @@
+# Godot should not index the Rust workspace tree.
+# Native library artifacts are copied to addons/celestial_sim/bin.

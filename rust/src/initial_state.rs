@@ -89,7 +89,7 @@ pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
     let t_divided = vec![0i32; n_tris as usize];
     let t_deactivated = vec![0i32; n_tris as usize];
     let t_to_divide_mask = vec![0i32; n_tris as usize];
-    let t_to_merge_mask = vec![0i32; n_tris as usize];
+    let t_to_merge_mask = vec![0u32; n_tris as usize];
 
     // All vertices need initial update
     let v_update_mask = vec![1i32; n_verts as usize];
@@ -98,6 +98,7 @@ pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
         n_tris,
         n_verts,
         n_deactivated_tris: 0,
+        n_divided: 0,
         start_idx: 0,
         v_pos: compute_utils::create_storage_buffer(rd, &v_pos_flat),
         t_abc: compute_utils::create_storage_buffer(rd, &t_abc_flat),

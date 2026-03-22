@@ -63,7 +63,7 @@ ConstantBuffer<uint> removeDupVerts;
 RWStructuredBuffer<int> t_lv;
 
 [[vk::binding(20, 0)]]
-RWStructuredBuffer<uint> indicesToDiv;
+StructuredBuffer<int> div_prefix;
 
 
 enum Edge
@@ -400,16 +400,16 @@ uint4 add_triangles(uint parent_idx, int3 abc, int3 v_idx, uint divTrisIndex)
 
 // Main compute shader function
 [shader("compute")]
-[numthreads(2, 1, 1)]
+[numthreads(256, 1, 1)]
 void computeMain(uint3 DTid: SV_DispatchThreadID)
 {
-    if (DTid.x >= nTrisIndexAdded)
+    uint idx = DTid.x;
+    if (idx >= nTris)
         return;
-    // thread index starting from first to last possible dividable tris
-    uint idx = indicesToDiv[DTid.x];
-    // index starting from zero and increasing for each divided tris
-    // 0 to nTrisToDiv
-    uint divTrisIndex = DTid.x;
+    if (t_to_div[idx] == 0)
+        return;
+    // divTrisIndex: 0-based output slot for this divided triangle
+    uint divTrisIndex = uint(div_prefix[idx]);
 
     int3 abc = t_abc[idx];
 

@@ -1,8 +1,8 @@
-use godot::builtin::{Callable, PackedByteArray, Variant, Vector3};
+use godot::builtin::{Callable, PackedByteArray, Variant, Vector2, Vector3};
 use godot::classes::RdUniform;
 use godot::classes::{RenderingDevice, RenderingServer};
 use godot::obj::{Gd, NewGd, Singleton};
-use godot::prelude::{godot_warn, load, Array, Rid};
+use godot::prelude::{load, Array, Rid};
 
 use std::sync::Mutex;
 
@@ -213,26 +213,33 @@ impl Drop for ComputePipeline {
         if !self.shader.is_valid() && !self.pipeline.is_valid() {
             return;
         }
-        let rd_clone = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            RdSend(self.rd.0.clone())
-        }));
-        match rd_clone {
-            Ok(rd_send) => {
-                let shader = self.shader;
-                let pipeline = self.pipeline;
-                on_render_thread(move || {
-                    let mut rd = rd_send;
+
+        let shader = self.shader;
+        let pipeline = self.pipeline;
+
+        // Destructors may run while the engine is shutting down during hot-reload.
+        // Swallow any Godot-binding panic to avoid abort-on-drop during cleanup.
+        let cleanup_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rd_send = RdSend(self.rd.0.clone());
+            on_render_thread(move || {
+                let mut rd = rd_send;
+                if pipeline.is_valid() {
                     rd.0.free_rid(pipeline);
+                }
+                if shader.is_valid() {
                     rd.0.free_rid(shader);
-                });
-            }
-            Err(_) => {
-                godot_warn!(
-                    "ComputePipeline::drop: RenderingDevice already freed; \
-                     shader/pipeline RIDs will leak"
-                );
-            }
+                }
+            });
+        }));
+
+        if cleanup_result.is_err() {
+            eprintln!(
+                "ComputePipeline::drop: engine unavailable during cleanup; shader/pipeline RIDs may leak"
+            );
         }
+
+        self.shader = Rid::Invalid;
+        self.pipeline = Rid::Invalid;
     }
 }
 
@@ -258,6 +265,29 @@ pub fn convert_buffer_to_vec<T: bytemuck::Pod + Send>(
     })
 }
 
+/// Reads a single element at the given index from a GPU buffer.
+pub fn read_buffer_element<T: bytemuck::Pod + Send>(
+    rd: &mut Gd<RenderingDevice>,
+    buffer: &BufferInfo,
+    index: u32,
+) -> T {
+    let elem_size = std::mem::size_of::<T>() as u32;
+    let offset = index * elem_size;
+    let rd_send = RdSend(rd.clone());
+    let rid = buffer.rid;
+
+    on_render_thread_sync(move || {
+        let mut rd = rd_send;
+        let byte_data =
+            rd.0.buffer_get_data_ex(rid)
+                .offset_bytes(offset)
+                .size_bytes(elem_size)
+                .done();
+        let bytes = byte_data.as_slice();
+        *bytemuck::from_bytes::<T>(bytes)
+    })
+}
+
 /// Reads a float4 GPU buffer and converts to Vec<Vector3> (discarding w).
 pub fn convert_v4_buffer_to_vec3(
     rd: &mut Gd<RenderingDevice>,
@@ -274,6 +304,48 @@ pub fn convert_v4_buffer_to_vec3(
         ));
     }
     result
+}
+
+/// Reads a packed float buffer (xyzxyz...) and reinterprets it as Vec<Vector3>.
+///
+/// This is a forced cast path and assumes Godot `real` is `f32` for Vector3.
+pub fn convert_packed_f32_buffer_to_vec3(
+    rd: &mut Gd<RenderingDevice>,
+    buffer: &BufferInfo,
+) -> Vec<Vector3> {
+    let float_data: Vec<f32> = convert_buffer_to_vec(rd, buffer);
+    let num_vectors = float_data.len() / 3;
+
+    assert_eq!(
+        std::mem::size_of::<Vector3>(),
+        3 * std::mem::size_of::<f32>()
+    );
+    assert_eq!(std::mem::align_of::<Vector3>(), std::mem::align_of::<f32>());
+
+    unsafe {
+        std::slice::from_raw_parts(float_data.as_ptr() as *const Vector3, num_vectors).to_vec()
+    }
+}
+
+/// Reads a packed float buffer (uvuv...) and reinterprets it as Vec<Vector2>.
+///
+/// This is a forced cast path and assumes Godot `real` is `f32` for Vector2.
+pub fn convert_packed_f32_buffer_to_vec2(
+    rd: &mut Gd<RenderingDevice>,
+    buffer: &BufferInfo,
+) -> Vec<Vector2> {
+    let float_data: Vec<f32> = convert_buffer_to_vec(rd, buffer);
+    let num_vectors = float_data.len() / 2;
+
+    assert_eq!(
+        std::mem::size_of::<Vector2>(),
+        2 * std::mem::size_of::<f32>()
+    );
+    assert_eq!(std::mem::align_of::<Vector2>(), std::mem::align_of::<f32>());
+
+    unsafe {
+        std::slice::from_raw_parts(float_data.as_ptr() as *const Vector2, num_vectors).to_vec()
+    }
 }
 
 /// CPU prefix sum in-place.
@@ -297,8 +369,7 @@ pub fn sum_array_in_place(arr: &mut [i32], invert: bool) {
 
 fn create_storage_buffer_from_bytes(rd: &mut Gd<RenderingDevice>, bytes: &[u8]) -> BufferInfo {
     let len = bytes.len() as u32;
-    let mut pba = PackedByteArray::new();
-    pba.extend(bytes.iter().copied());
+    let pba = PackedByteArray::from(bytes);
     let rid = rd.storage_buffer_create_ex(len).data(&pba).done();
     assert!(rid.is_valid(), "Failed to create storage buffer");
     BufferInfo::new_storage(rid, len, len)

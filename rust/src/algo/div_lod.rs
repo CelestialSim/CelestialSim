@@ -7,20 +7,25 @@ use crate::compute_utils::ComputePipeline;
 use crate::state::{CesState, Triangle};
 
 const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/DivideLOD.slang";
+const DIV_PREFIX_SHADER_PATH: &str =
+    "res://addons/celestial_sim/shaders/ComputeDivPrefixSum.slang";
 
 pub struct DivShader {
     pipeline: ComputePipeline,
+    div_prefix_pipeline: ComputePipeline,
 }
 
 impl DivShader {
     pub fn new(rd: &mut Gd<RenderingDevice>) -> Self {
         Self {
             pipeline: ComputePipeline::new(rd, SHADER_PATH),
+            div_prefix_pipeline: ComputePipeline::new(rd, DIV_PREFIX_SHADER_PATH),
         }
     }
 
     pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
         self.pipeline.dispose_direct(rd);
+        self.div_prefix_pipeline.dispose_direct(rd);
     }
 }
 
@@ -189,26 +194,19 @@ fn compute_new_indices(rd: &mut Gd<RenderingDevice>, state: &CesState) -> (Vec<T
 impl DivShader {
     /// Performs triangle subdivision. Mirrors C# `CesDivLOD.MakeDiv()`.
     ///
+    /// `n_tris_to_div` is the number of triangles marked for division (from
+    /// `MarkTrisCounters::n_to_divide`).
+    ///
     /// Returns the number of triangles added (0 if nothing to divide).
     pub fn make_div(
         &self,
         rd: &mut Gd<RenderingDevice>,
         state: &mut CesState,
         precise_normals: bool,
+        n_tris_to_div: u32,
     ) -> u32 {
         let remove_repeated_verts: u32 = if precise_normals { 1 } else { 0 };
 
-        let to_div_mask = state.get_t_to_divide_mask(rd);
-        let divided_mask = state.get_divided_mask(rd);
-
-        let mut indices_to_div: Vec<u32> = Vec::new();
-        for i in 0..to_div_mask.len() {
-            if to_div_mask[i] != 0 && divided_mask[i] == 0 {
-                indices_to_div.push(i as u32);
-            }
-        }
-
-        let n_tris_to_div = indices_to_div.len() as u32;
         let n_tris_added = 4 * n_tris_to_div;
         let mut n_verts_added = 3 * n_tris_to_div;
 
@@ -216,7 +214,18 @@ impl DivShader {
             return 0;
         }
 
-        let indices_to_div_buf = compute_utils::create_storage_buffer(rd, &indices_to_div);
+        // Compute exclusive prefix sum on t_to_div mask (GPU)
+        let div_prefix_buf =
+            compute_utils::create_empty_storage_buffer(rd, state.n_tris * std::mem::size_of::<i32>() as u32);
+        self.div_prefix_pipeline.dispatch(
+            rd,
+            &[
+                &state.t_to_divide_mask, // 0: t_to_div
+                &div_prefix_buf,          // 1: div_prefix (output)
+                &state.u_n_tris,          // 2: n_tris
+            ],
+            1,
+        );
 
         // Extend t_abc and optionally compute new indices on CPU
         state
@@ -290,13 +299,14 @@ impl DivShader {
             &state.t_parent,         // 17
             &remove_repeated_buf,    // 18
             &state.t_lv,             // 19
-            &indices_to_div_buf,     // 20
+            &div_prefix_buf,         // 20
         ];
 
-        self.pipeline.dispatch(rd, &buffers, n_tris_to_div);
+        let workgroups = (old_n_tris + 255) / 256;
+        self.pipeline.dispatch(rd, &buffers, workgroups);
 
         // Free temporary buffers
-        compute_utils::free_rid_on_render_thread(rd, indices_to_div_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, div_prefix_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, old_n_tris_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, old_n_verts_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, n_tris_to_div_buf.rid);

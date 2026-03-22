@@ -27,29 +27,33 @@ ConstantBuffer<float> radius;
 [[vk::binding(8, 0)]]
 ConstantBuffer<float> max_tri_size;
 
-[[vk::binding(9, 0)]]
-RWStructuredBuffer<float> tris_size;
-
 // Neighbour triangles
-[[vk::binding(10, 0)]]
+[[vk::binding(9, 0)]]
 StructuredBuffer<int> t_neigh_ab;
 
-[[vk::binding(11, 0)]]
+[[vk::binding(10, 0)]]
 StructuredBuffer<int> t_neigh_bc;
 
-[[vk::binding(12, 0)]]
+[[vk::binding(11, 0)]]
 StructuredBuffer<int> t_neigh_ca;
 
 // Deactivated triangles mask
-[[vk::binding(13, 0)]]
+[[vk::binding(12, 0)]]
 StructuredBuffer<int> t_deactivated;
 
 // Mask for triangles that should be merged
+[[vk::binding(13, 0)]]
+RWStructuredBuffer<uint> t_to_merge_mask;
+
 [[vk::binding(14, 0)]]
-RWStructuredBuffer<int> t_to_merge_mask;
+StructuredBuffer<uint> t_parent;
 
 [[vk::binding(15, 0)]]
-StructuredBuffer<uint> t_parent;
+ConstantBuffer<uint> n_tris;
+
+// Atomic counters: [0] = n_to_divide, [1] = n_to_merge, [2] = n_deactivated, [3] = n_divided
+[[vk::binding(16, 0)]]
+RWStructuredBuffer<uint> counters;
 
 // Camera parameters from viewport settings
 static const float fov = 75.0f;         // Field of view in degrees
@@ -154,37 +158,46 @@ float calculateScreenAreaComplex(int triIdx)
 
 // Main compute shader function
 [shader("compute")]
-[numthreads(2, 1, 1)]
+[numthreads(256, 1, 1)]
 void computeMain(uint3 DTid: SV_DispatchThreadID)
 {
-    var idx = DTid.x;
+    uint idx = DTid.x;
+    if (idx >= n_tris) return;
 
     // Initialize outputs
     t_to_div[idx] = 0;
-    t_to_merge_mask[idx] = 0;
+    t_to_merge_mask[idx] = 0u;
 
     // Skip if triangle is deactivated
     if (t_deactivated[idx] != 0)
     {
+        InterlockedAdd(counters[2], 1u); // n_deactivated
         return;
     }
+    // Count divided triangles
+    if (t_divided[idx] != 0)
+    {
+        InterlockedAdd(counters[3], 1u); // n_divided
+    }
+
     // We always merge the parent triangle, not the children
     // Merge if max subdivisions has been reduced by the user
     if (t_lv[idx] > max_divs)
     {
-
-        t_to_merge_mask[t_parent[idx]] = 1;
+        t_to_merge_mask[t_parent[idx]] = 1u;
+        InterlockedAdd(counters[1], 1u); // n_to_merge (upper bound)
         return;
     }
 
     float screenArea = calculateScreenArea(idx);
-    if (t_lv[idx] < max_divs)
+    if (t_lv[idx] < max_divs && t_divided[idx] == 0)
     {
-        // Calculate screen area
-        tris_size[idx] = screenArea;
-
         // Check if triangle is large enough to divide
-        t_to_div[idx] = screenArea > max_tri_size;
+        if (screenArea > max_tri_size)
+        {
+            t_to_div[idx] = 1;
+            InterlockedAdd(counters[0], 1u); // n_to_divide
+        }
     }
     // Check if divided triangle is now too small and should be merged
     // TODO: Use a threshold (e.g., 1/4 of max_tri_size) to avoid thrashing
@@ -204,6 +217,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     // t_divided[idx] == 0 to divide only children
     if (parentScreenArea < (max_tri_size * 0.8f) && t_divided[t_parent[idx]] == 1)
     {
-        t_to_merge_mask[t_parent[idx]] = 1;
+        t_to_merge_mask[t_parent[idx]] = 1u;
+        InterlockedAdd(counters[1], 1u); // n_to_merge (upper bound)
     }
 }

@@ -4,11 +4,11 @@ compatibility_minimum = 4.1
 reloadable = true
 
 [libraries]
-linux.debug.x86_64 = "res://rust/target/debug/libcelestial_sim.so"
-linux.release.x86_64 = "res://rust/target/release/libcelestial_sim.so"
-windows.debug.x86_64 = "res://rust/target/debug/celestial_sim.dll"
-windows.release.x86_64 = "res://rust/target/release/celestial_sim.dll"
-macos.debug = "res://rust/target/debug/libcelestial_sim.dylib"
-macos.release = "res://rust/target/release/libcelestial_sim.dylib"
-macos.debug.arm64 = "res://rust/target/debug/libcelestial_sim.dylib"
-macos.release.arm64 = "res://rust/target/release/libcelestial_sim.dylib"
+linux.debug.x86_64 = "res://addons/celestial_sim/bin/linux/debug/libcelestial_sim.so"
+linux.release.x86_64 = "res://addons/celestial_sim/bin/linux/release/libcelestial_sim.so"
+windows.debug.x86_64 = "res://addons/celestial_sim/bin/windows/debug/celestial_sim.dll"
+windows.release.x86_64 = "res://addons/celestial_sim/bin/windows/release/celestial_sim.dll"
+macos.debug = "res://addons/celestial_sim/bin/macos/debug/libcelestial_sim.dylib"
+macos.release = "res://addons/celestial_sim/bin/macos/release/libcelestial_sim.dylib"
+macos.debug.arm64 = "res://addons/celestial_sim/bin/macos/debug/libcelestial_sim.dylib"
+macos.release.arm64 = "res://addons/celestial_sim/bin/macos/release/libcelestial_sim.dylib"
