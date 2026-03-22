@@ -1,3 +1,8 @@
+// CountNonZeroNaive — Baseline shader using per-thread atomic add.
+
+// Each thread checks one element and atomically increments the global counter.
+// This causes high contention on out_count[0] for large inputs.
+
 [[vk::binding(0, 0)]]
 StructuredBuffer<uint> mask;
 
@@ -8,7 +13,7 @@ RWStructuredBuffer<uint> out_count;
 ConstantBuffer<uint> n_tris;
 
 [shader("compute")]
-[numthreads(64, 1, 1)]
+[numthreads(256, 1, 1)]
 void computeMain(uint3 DTid: SV_DispatchThreadID)
 {
     uint idx = DTid.x;

@@ -12,6 +12,7 @@ const COUNT_SHADER_PATH: &str = "res://addons/celestial_sim/shaders/CountNonZero
 pub struct MergeShader {
     pipeline: ComputePipeline,
     count_pipeline: ComputePipeline,
+    counter: BufferInfo,
 }
 
 impl MergeShader {
@@ -19,21 +20,27 @@ impl MergeShader {
         Self {
             pipeline: ComputePipeline::new(rd, SHADER_PATH),
             count_pipeline: ComputePipeline::new(rd, COUNT_SHADER_PATH),
+            counter: compute_utils::create_storage_buffer(rd, &[0u32]),
         }
     }
 
     pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
         self.pipeline.dispose_direct(rd);
         self.count_pipeline.dispose_direct(rd);
+        if self.counter.rid.is_valid() {
+            rd.free_rid(self.counter.rid);
+        }
     }
 
     fn count_merge_candidates(&self, rd: &mut Gd<RenderingDevice>, state: &CesState) -> u32 {
-        let counter = compute_utils::create_storage_buffer(rd, &[0u32]);
-        let buffers: Vec<&BufferInfo> = vec![&state.t_to_merge_mask, &counter, &state.u_n_tris];
-        self.count_pipeline.dispatch(rd, &buffers, state.n_tris);
+        // Zero the reusable counter buffer instead of allocating a new one each call
+        compute_utils::buffer_clear_on_render_thread(rd, self.counter.rid, 0, 4);
+        let buffers: Vec<&BufferInfo> =
+            vec![&state.t_to_merge_mask, &self.counter, &state.u_n_tris];
+        self.count_pipeline
+            .dispatch(rd, &buffers, (state.n_tris + 255) / 256);
 
-        let counts: Vec<u32> = compute_utils::convert_buffer_to_vec(rd, &counter);
-        compute_utils::free_rid_on_render_thread(rd, counter.rid);
+        let counts: Vec<u32> = compute_utils::convert_buffer_to_vec(rd, &self.counter);
         counts.first().copied().unwrap_or(0)
     }
 

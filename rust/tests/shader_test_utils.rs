@@ -73,21 +73,6 @@ pub fn create_buffer_init(
     })
 }
 
-/// Create an empty GPU buffer of a given size.
-pub fn create_buffer_empty(
-    device: &wgpu::Device,
-    label: &str,
-    size: u64,
-    usage: wgpu::BufferUsages,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage,
-        mapped_at_creation: false,
-    })
-}
-
 /// Dispatch a compute shader from raw SPIR-V bytes.
 /// Internally converts SPIR-V to WGSL via naga for maximum compatibility.
 ///
