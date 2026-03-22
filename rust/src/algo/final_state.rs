@@ -9,20 +9,25 @@ use crate::compute_utils::ComputePipeline;
 use crate::state::CesState;
 
 const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/CreateFinalOutput.slang";
+const VISIBLE_PREFIX_SHADER_PATH: &str =
+    "res://addons/celestial_sim/shaders/ComputeVisiblePrefixSum.slang";
 
 pub struct FinalStateShader {
     pipeline: ComputePipeline,
+    visible_prefix_pipeline: ComputePipeline,
 }
 
 impl FinalStateShader {
     pub fn new(rd: &mut Gd<RenderingDevice>) -> Self {
         Self {
             pipeline: ComputePipeline::new(rd, SHADER_PATH),
+            visible_prefix_pipeline: ComputePipeline::new(rd, VISIBLE_PREFIX_SHADER_PATH),
         }
     }
 
     pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
         self.pipeline.dispose_direct(rd);
+        self.visible_prefix_pipeline.dispose_direct(rd);
     }
 }
 
@@ -38,7 +43,6 @@ pub struct GpuFinalOutput {
 pub struct FinalOutput {
     pub tris: Vec<i32>,
     pub uv: Vec<Vector2>,
-    pub normals: Vec<Vector3>,
     pub pos: Vec<Vector3>,
 }
 
@@ -65,28 +69,35 @@ pub fn create_final_output_gpu(
     state: &CesState,
     shader: &FinalStateShader,
 ) -> GpuFinalOutput {
-    let div_mask = state.get_divided_mask(rd);
-    let deactivated_mask = state.get_t_deactivated_mask(rd);
+    if state.n_tris == 0 {
+        return GpuFinalOutput {
+            pos: None,
+            tris: None,
+            uv: None,
+            n_visible_tris: 0,
+        };
+    }
 
-    let visible_mask: Vec<i32> = div_mask
-        .iter()
-        .zip(deactivated_mask.iter())
-        .map(|(&d, &a)| if d == 0 && a == 0 { 1 } else { 0 })
-        .collect();
+    // Step 1: Compute visible mask + prefix sum in one dispatch
+    let visible_mask_buffer = compute_utils::create_empty_storage_buffer(rd, state.n_tris * 4);
+    let visible_prefix_buffer = compute_utils::create_empty_storage_buffer(rd, state.n_tris * 4);
+    shader.visible_prefix_pipeline.dispatch(
+        rd,
+        &[
+            &state.t_divided,
+            &state.t_deactivated,
+            &visible_mask_buffer,
+            &visible_prefix_buffer,
+            &state.u_n_tris,
+        ],
+        1,
+    );
 
-    let visible_mask_buffer = compute_utils::create_storage_buffer(rd, &visible_mask);
+    let n_visible_tris = state.n_tris - state.n_divided - state.n_deactivated_tris;
 
-    let mut prefix = visible_mask.clone();
-    compute_utils::sum_array_in_place(&mut prefix, false);
-
-    let n_visible_tris = if prefix.is_empty() {
-        0u32
-    } else {
-        prefix[prefix.len() - 1] as u32
-    };
-
-    if n_visible_tris == 0 || state.n_tris == 0 {
+    if n_visible_tris == 0 {
         compute_utils::free_rid_on_render_thread(rd, visible_mask_buffer.rid);
+        compute_utils::free_rid_on_render_thread(rd, visible_prefix_buffer.rid);
         return GpuFinalOutput {
             pos: None,
             tris: None,
@@ -94,8 +105,6 @@ pub fn create_final_output_gpu(
             n_visible_tris,
         };
     }
-
-    let visible_prefix_buffer = compute_utils::create_storage_buffer(rd, &prefix);
 
     let vertex_count = n_visible_tris * 3;
     let out_pos = compute_utils::create_empty_storage_buffer(
@@ -156,7 +165,6 @@ pub fn read_final_output_to_cpu(
         return FinalOutput {
             tris: vec![],
             uv: vec![],
-            normals: vec![],
             pos: vec![],
         };
     }
@@ -168,8 +176,6 @@ pub fn read_final_output_to_cpu(
     let tris: Vec<i32> = compute_utils::convert_buffer_to_vec(rd, tris_buf);
     let pos: Vec<Vector3> = compute_utils::convert_packed_f32_buffer_to_vec3(rd, pos_buf);
     let uv: Vec<Vector2> = compute_utils::convert_packed_f32_buffer_to_vec2(rd, uv_buf);
-
-    let normals = vec![Vector3::ZERO; pos.len()];
 
     if free_buffers {
         if let Some(ref b) = gpu_output.pos {
@@ -183,12 +189,7 @@ pub fn read_final_output_to_cpu(
         }
     }
 
-    FinalOutput {
-        tris,
-        uv,
-        normals,
-        pos,
-    }
+    FinalOutput { tris, uv, pos }
 }
 
 #[cfg(test)]
@@ -222,7 +223,6 @@ mod tests {
         let output = FinalOutput {
             tris: vec![],
             uv: vec![],
-            normals: vec![],
             pos: vec![],
         };
         assert!(output.tris.is_empty());

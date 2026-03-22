@@ -98,6 +98,7 @@ pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
         n_tris,
         n_verts,
         n_deactivated_tris: 0,
+        n_divided: 0,
         start_idx: 0,
         v_pos: compute_utils::create_storage_buffer(rd, &v_pos_flat),
         t_abc: compute_utils::create_storage_buffer(rd, &t_abc_flat),

@@ -22,6 +22,7 @@ pub struct CesState {
     pub n_tris: u32,
     pub n_verts: u32,
     pub n_deactivated_tris: u32,
+    pub n_divided: u32,
     pub start_idx: u32,
 
     // 17 buffer fields

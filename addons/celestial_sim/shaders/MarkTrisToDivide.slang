@@ -48,6 +48,13 @@ RWStructuredBuffer<uint> t_to_merge_mask;
 [[vk::binding(14, 0)]]
 StructuredBuffer<uint> t_parent;
 
+[[vk::binding(15, 0)]]
+ConstantBuffer<uint> n_tris;
+
+// Atomic counters: [0] = n_to_divide, [1] = n_to_merge, [2] = n_deactivated, [3] = n_divided
+[[vk::binding(16, 0)]]
+RWStructuredBuffer<uint> counters;
+
 // Camera parameters from viewport settings
 static const float fov = 75.0f;         // Field of view in degrees
 static const float near_plane = 0.05f;  // Near clipping plane in meters
@@ -151,10 +158,11 @@ float calculateScreenAreaComplex(int triIdx)
 
 // Main compute shader function
 [shader("compute")]
-[numthreads(2, 1, 1)]
+[numthreads(256, 1, 1)]
 void computeMain(uint3 DTid: SV_DispatchThreadID)
 {
-    var idx = DTid.x;
+    uint idx = DTid.x;
+    if (idx >= n_tris) return;
 
     // Initialize outputs
     t_to_div[idx] = 0;
@@ -163,22 +171,33 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     // Skip if triangle is deactivated
     if (t_deactivated[idx] != 0)
     {
+        InterlockedAdd(counters[2], 1u); // n_deactivated
         return;
     }
+    // Count divided triangles
+    if (t_divided[idx] != 0)
+    {
+        InterlockedAdd(counters[3], 1u); // n_divided
+    }
+
     // We always merge the parent triangle, not the children
     // Merge if max subdivisions has been reduced by the user
     if (t_lv[idx] > max_divs)
     {
-
         t_to_merge_mask[t_parent[idx]] = 1u;
+        InterlockedAdd(counters[1], 1u); // n_to_merge (upper bound)
         return;
     }
 
     float screenArea = calculateScreenArea(idx);
-    if (t_lv[idx] < max_divs)
+    if (t_lv[idx] < max_divs && t_divided[idx] == 0)
     {
         // Check if triangle is large enough to divide
-        t_to_div[idx] = screenArea > max_tri_size;
+        if (screenArea > max_tri_size)
+        {
+            t_to_div[idx] = 1;
+            InterlockedAdd(counters[0], 1u); // n_to_divide
+        }
     }
     // Check if divided triangle is now too small and should be merged
     // TODO: Use a threshold (e.g., 1/4 of max_tri_size) to avoid thrashing
@@ -199,5 +218,6 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     if (parentScreenArea < (max_tri_size * 0.8f) && t_divided[t_parent[idx]] == 1)
     {
         t_to_merge_mask[t_parent[idx]] = 1u;
+        InterlockedAdd(counters[1], 1u); // n_to_merge (upper bound)
     }
 }

@@ -265,6 +265,29 @@ pub fn convert_buffer_to_vec<T: bytemuck::Pod + Send>(
     })
 }
 
+/// Reads a single element at the given index from a GPU buffer.
+pub fn read_buffer_element<T: bytemuck::Pod + Send>(
+    rd: &mut Gd<RenderingDevice>,
+    buffer: &BufferInfo,
+    index: u32,
+) -> T {
+    let elem_size = std::mem::size_of::<T>() as u32;
+    let offset = index * elem_size;
+    let rd_send = RdSend(rd.clone());
+    let rid = buffer.rid;
+
+    on_render_thread_sync(move || {
+        let mut rd = rd_send;
+        let byte_data =
+            rd.0.buffer_get_data_ex(rid)
+                .offset_bytes(offset)
+                .size_bytes(elem_size)
+                .done();
+        let bytes = byte_data.as_slice();
+        *bytemuck::from_bytes::<T>(bytes)
+    })
+}
+
 /// Reads a float4 GPU buffer and converts to Vec<Vector3> (discarding w).
 pub fn convert_v4_buffer_to_vec3(
     rd: &mut Gd<RenderingDevice>,

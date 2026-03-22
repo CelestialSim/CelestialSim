@@ -30,7 +30,6 @@ struct SettingsSnapshot {
 
 struct MeshResult {
     pos: Vec<Vector3>,
-    normals: Vec<Vector3>,
     triangles: Vec<i32>,
     uv: Vec<Vector2>,
 }
@@ -383,24 +382,18 @@ impl CesCelestialRust {
 
         let MeshResult {
             pos,
-            normals,
             triangles,
             uv,
         } = result;
         let triangle_count = triangles.len() / 3;
 
         let packed_verts = PackedVector3Array::from(pos);
-        let packed_normals = PackedVector3Array::from(normals);
         let packed_indices = PackedInt32Array::from(triangles);
         let packed_uvs: PackedVector2Array = PackedVector2Array::from(uv);
 
         let mut surface_array = varray![];
         surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
         surface_array.set(ArrayType::VERTEX.ord() as usize, &packed_verts.to_variant());
-        surface_array.set(
-            ArrayType::NORMAL.ord() as usize,
-            &packed_normals.to_variant(),
-        );
         surface_array.set(
             ArrayType::INDEX.ord() as usize,
             &packed_indices.to_variant(),
@@ -426,7 +419,7 @@ impl CesCelestialRust {
         self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
-            godot_print!("Mesh Triangles_17: {}", triangle_count);
+            godot_print!("Mesh Triangles: {}", triangle_count);
         }
 
         if self.generate_collision {
@@ -487,7 +480,6 @@ impl CesCelestialRust {
                 if output.pos.is_empty() || output.tris.is_empty() {
                     let _ = result_tx.send(MeshResult {
                         pos: vec![],
-                        normals: vec![],
                         triangles: vec![],
                         uv: vec![],
                     });
@@ -496,7 +488,6 @@ impl CesCelestialRust {
 
                 let result = MeshResult {
                     pos: output.pos,
-                    normals: output.normals,
                     triangles: output.tris,
                     uv: output.uv,
                 };
