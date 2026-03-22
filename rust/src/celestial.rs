@@ -7,6 +7,7 @@ use godot::builtin::{
 };
 use godot::classes::mesh::ArrayType;
 use godot::classes::mesh::PrimitiveType;
+use godot::classes::notify::Node3DNotification;
 use godot::classes::{
     ArrayMesh, Camera3D, CollisionShape3D, ConcavePolygonShape3D, Engine, INode3D, Node3D,
     RenderingDevice, RenderingServer, Shader, ShaderMaterial, StaticBody3D,
@@ -68,12 +69,19 @@ impl ScopedTimer {
 
 impl Drop for ScopedTimer {
     fn drop(&mut self) {
-        if self.enabled {
-            godot_print!(
-                "{} took {:.3} ms",
-                self.label,
-                self.start.elapsed().as_secs_f64() * 1000.0
-            );
+        if !self.enabled {
+            return;
+        }
+
+        let elapsed_ms = self.start.elapsed().as_secs_f64() * 1000.0;
+        // During hot-reload, Drop can run while Godot bindings are unavailable.
+        // Never let timing logs panic inside a destructor.
+        if std::panic::catch_unwind(|| {
+            godot_print!("{} took {:.3} ms", self.label, elapsed_ms);
+        })
+        .is_err()
+        {
+            eprintln!("{} took {:.3} ms", self.label, elapsed_ms);
         }
     }
 }
@@ -276,36 +284,50 @@ impl INode3D for CesCelestialRust {
     }
 
     fn exit_tree(&mut self) {
+        self.shutdown_for_reload_or_exit();
+    }
+
+    fn on_notification(&mut self, what: Node3DNotification) {
+        if what == Node3DNotification::PREDELETE {
+            self.shutdown_for_reload_or_exit();
+        }
+    }
+}
+
+impl CesCelestialRust {
+    fn shutdown_for_reload_or_exit(&mut self) {
+        if self.is_shutting_down {
+            return;
+        }
         self.is_shutting_down = true;
 
-        // Free the RS instance and mesh FIRST so the planet disappears immediately
-        let mut rs = RenderingServer::singleton();
-        if self.instance.is_valid() {
-            rs.free_rid(self.instance);
+        // Free visible scene resources first.
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut rs = RenderingServer::singleton();
+            if self.instance.is_valid() {
+                rs.free_rid(self.instance);
+                self.instance = Rid::Invalid;
+            }
+            if let Some(ref mesh) = self.mesh {
+                rs.free_rid(mesh.get_rid());
+            }
+            self.mesh = None;
+        }))
+        .is_err()
+        {
+            eprintln!("CesCelestialRust shutdown: failed to free scene RIDs (engine unavailable)");
             self.instance = Rid::Invalid;
+            self.mesh = None;
         }
-        if let Some(ref mesh) = self.mesh {
-            rs.free_rid(mesh.get_rid());
-        }
-        self.mesh = None;
 
-        // Drop the sender to signal the worker thread to exit
+        // Signal worker to stop and stop accepting results.
         drop(self.work_tx.take());
         self.result_rx = None;
 
-        // Join the worker thread with a timeout to recover the RenderingDevice.
-        // The worker should be idle on recv() which will return Err immediately
-        // once work_tx is dropped.
+        // Always join the worker before unload to avoid executing old code after DLL reload.
         if let Some(handle) = self.worker_handle.take() {
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let worker = handle.join();
-                let _ = done_tx.send(worker);
-            });
-            match done_rx.recv_timeout(std::time::Duration::from_secs(2)) {
-                Ok(Ok(mut worker)) => {
-                    // Free GPU resources directly (not deferred) to avoid
-                    // RD clone panics when the device is being invalidated.
+            match handle.join() {
+                Ok(mut worker) => {
                     if let Some(ref mut gen) = worker.graph_generator {
                         gen.dispose_direct(&mut worker.rd);
                     }
@@ -314,15 +336,13 @@ impl INode3D for CesCelestialRust {
                     }
                     worker.rd.free();
                 }
-                _ => {
-                    godot_warn!("Worker thread did not shut down in time; GPU resources may leak");
+                Err(_) => {
+                    eprintln!("CesCelestialRust shutdown: worker thread panicked while joining");
                 }
             }
         }
     }
-}
 
-impl CesCelestialRust {
     fn current_settings(&self) -> SettingsSnapshot {
         SettingsSnapshot {
             radius: self.radius,
@@ -406,7 +426,7 @@ impl CesCelestialRust {
         self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
-            godot_print!("Mesh Triangles3: {}", triangle_count);
+            godot_print!("Mesh Triangles_17: {}", triangle_count);
         }
 
         if self.generate_collision {

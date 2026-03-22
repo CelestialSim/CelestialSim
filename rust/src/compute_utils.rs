@@ -2,7 +2,7 @@ use godot::builtin::{Callable, PackedByteArray, Variant, Vector2, Vector3};
 use godot::classes::RdUniform;
 use godot::classes::{RenderingDevice, RenderingServer};
 use godot::obj::{Gd, NewGd, Singleton};
-use godot::prelude::{godot_warn, load, Array, Rid};
+use godot::prelude::{load, Array, Rid};
 
 use std::sync::Mutex;
 
@@ -213,25 +213,33 @@ impl Drop for ComputePipeline {
         if !self.shader.is_valid() && !self.pipeline.is_valid() {
             return;
         }
-        let rd_clone =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| RdSend(self.rd.0.clone())));
-        match rd_clone {
-            Ok(rd_send) => {
-                let shader = self.shader;
-                let pipeline = self.pipeline;
-                on_render_thread(move || {
-                    let mut rd = rd_send;
+
+        let shader = self.shader;
+        let pipeline = self.pipeline;
+
+        // Destructors may run while the engine is shutting down during hot-reload.
+        // Swallow any Godot-binding panic to avoid abort-on-drop during cleanup.
+        let cleanup_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let rd_send = RdSend(self.rd.0.clone());
+            on_render_thread(move || {
+                let mut rd = rd_send;
+                if pipeline.is_valid() {
                     rd.0.free_rid(pipeline);
+                }
+                if shader.is_valid() {
                     rd.0.free_rid(shader);
-                });
-            }
-            Err(_) => {
-                godot_warn!(
-                    "ComputePipeline::drop: RenderingDevice already freed; \
-                     shader/pipeline RIDs will leak"
-                );
-            }
+                }
+            });
+        }));
+
+        if cleanup_result.is_err() {
+            eprintln!(
+                "ComputePipeline::drop: engine unavailable during cleanup; shader/pipeline RIDs may leak"
+            );
         }
+
+        self.shader = Rid::Invalid;
+        self.pipeline = Rid::Invalid;
     }
 }
 
