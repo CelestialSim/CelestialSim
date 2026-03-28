@@ -1,0 +1,30 @@
+[gd_scene format=3 uid="uid://cexglfmh3ivlf"]
+
+[ext_resource type="Script" uid="uid://7sb8gr7iidvv" path="res://addons/celestial_sim/layers/ces_texture_layer.gd" id="1_vnfgq"]
+[ext_resource type="Script" uid="uid://cwosrvp03o7qk" path="res://addons/celestial_sim/layers/ces_show_level_texture_layer.gd" id="2_ytrfd"]
+
+[sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_8kbqc"]
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_abd7x"]
+script = ExtResource("1_vnfgq")
+resolution = 2000
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_8kbqc"]
+enabled = false
+script = ExtResource("2_ytrfd")
+metadata/_custom_type_script = "uid://cwosrvp03o7qk"
+
+[node name="CubemapTextureDemo" type="Node3D" unique_id=789845199]
+
+[node name="Planet" type="CesCelestialRust" parent="." unique_id=1887855727]
+radius = 1.51
+triangle_screen_size = 0.0
+show_debug_messages = true
+height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_8kbqc")])
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_abd7x"), SubResource("CesTextureLayerResource_8kbqc")])
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=251399329]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1242185540]
+transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)

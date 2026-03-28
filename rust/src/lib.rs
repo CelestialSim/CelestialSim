@@ -13,10 +13,13 @@ mod cpu_subdivide;
 mod debug_dump;
 #[allow(dead_code)]
 mod initial_state;
+mod layer_resources;
 #[allow(dead_code)]
 mod layers;
 #[allow(dead_code)]
 mod state;
+#[allow(dead_code)]
+mod texture_gen;
 
 struct CelestialSimExtension;
 

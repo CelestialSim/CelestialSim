@@ -159,6 +159,16 @@ impl ComputePipeline {
         }
     }
 
+    /// Returns the raw shader RID (for building custom uniform sets).
+    pub fn shader(&self) -> Rid {
+        self.shader
+    }
+
+    /// Returns the raw pipeline RID.
+    pub fn pipeline(&self) -> Rid {
+        self.pipeline
+    }
+
     /// Dispatches the cached pipeline. Only the uniform set is created (and freed) per call.
     pub fn dispatch(&self, rd: &mut Gd<RenderingDevice>, buffers: &[&BufferInfo], threads: u32) {
         let buffer_descs: Vec<(Rid, crate::buffer_info::BufferType)> =

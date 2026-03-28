@@ -1,6 +1,9 @@
 [gd_scene format=3 uid="uid://diyw2paq4tpc7"]
 
-[ext_resource type="Shader" uid="uid://bdhr4fv16q0ge" path="res://addons/celestial_sim/shaders/show_level.gdshader" id="1_shader"]
+[ext_resource type="Script" path="res://addons/celestial_sim/layers/ces_show_level_texture_layer.gd" id="2_showlevel"]
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_slvl1"]
+script = ExtResource("2_showlevel")
 
 [node name="CelestialRustDemo" type="Node3D" unique_id=1187247285]
 
@@ -8,7 +11,7 @@
 subdivisions = 10
 triangle_screen_size = 0.01
 show_debug_messages = true
-shader = ExtResource("1_shader")
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_slvl1")])
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=1793620556]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 3)
