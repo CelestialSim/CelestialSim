@@ -1,0 +1,31 @@
+[gd_scene format=3 uid="uid://cni0otv6m1f5y"]
+
+[ext_resource type="Script" uid="uid://bqhdb85j7xu2k" path="res://addons/celestial_sim/layers/ces_terrain_texture_layer.gd" id="1_terrain"]
+
+[sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_h1"]
+shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_t1"]
+script = ExtResource("1_terrain")
+resolution = 500
+height_tiles = 11.048
+
+[node name="TerrainDemo" type="Node3D" unique_id=946981429]
+
+[node name="Planet" type="CesCelestialRust" parent="." unique_id=494222983]
+radius = 6.0
+subdivisions = 8
+triangle_screen_size = 0.001
+low_poly_look = false
+show_debug_messages = true
+height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_h1")])
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1")])
+transform = Transform3D(0.9775558, 0, -0.21067649, 0, 1, 0, 0.21067649, 0, 0.9775558, 0, 0, 0)
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1889152311]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 12)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=433354937]
+transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)
+light_energy = 1.5
+shadow_enabled = true

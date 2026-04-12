@@ -1,15 +1,15 @@
 @tool
-class_name CesTextureLayer
+class_name CesCubemapNoiseLayer
 extends CesTextureLayerResource
-## Generates cubemap noise texture and applies the planet_texture shader.
+## Generates cubemap noise textures for terrain displacement.
 
 @export var resolution: int = 512:
 	set(v):
 		resolution = v
 		emit_changed()
-@export_range(0, 4) var max_lod_levels: int = 4:
+@export var show_debug_cube: bool = false:
 	set(v):
-		max_lod_levels = v
+		show_debug_cube = v
 		emit_changed()
 var shader: Shader
 

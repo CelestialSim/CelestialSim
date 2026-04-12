@@ -9,6 +9,48 @@ use crate::compute_utils::{on_render_thread_sync, ComputePipeline, RdSend};
 
 const CUBEMAP_NOISE_SHADER: &str = "res://addons/celestial_sim/shaders/CubemapNoise.slang";
 
+/// Runtime-configurable terrain noise parameters.
+/// Layout must match the Slang `TerrainParams` struct exactly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TerrainParams {
+    pub height_tiles: f32,
+    pub height_octaves: i32,
+    pub height_amp: f32,
+    pub height_gain: f32,
+    pub height_lacunarity: f32,
+    pub erosion_tiles: f32,
+    pub erosion_octaves: i32,
+    pub erosion_gain: f32,
+    pub erosion_lacunarity: f32,
+    pub erosion_slope_strength: f32,
+    pub erosion_branch_strength: f32,
+    pub erosion_strength: f32,
+    pub water_height: f32,
+    pub _pad: [f32; 3],
+}
+
+impl Default for TerrainParams {
+    fn default() -> Self {
+        Self {
+            height_tiles: 3.0,
+            height_octaves: 3,
+            height_amp: 0.25,
+            height_gain: 0.1,
+            height_lacunarity: 2.0,
+            erosion_tiles: 4.0,
+            erosion_octaves: 5,
+            erosion_gain: 0.5,
+            erosion_lacunarity: 1.8,
+            erosion_slope_strength: 3.0,
+            erosion_branch_strength: 3.0,
+            erosion_strength: 0.04,
+            water_height: 0.45,
+            _pad: [0.0; 3],
+        }
+    }
+}
+
 /// Creates a uniform buffer directly on the given RD (for use inside render-thread callbacks).
 fn create_uniform_buffer_raw(rd: &mut Gd<RenderingDevice>, data: &[u8]) -> Rid {
     let padded_size = 16.max((data.len() + 15) / 16 * 16);
@@ -32,12 +74,13 @@ fn cubemap_usage_bits() -> TextureUsageBits {
         | TextureUsageBits::CAN_COPY_FROM_BIT
 }
 
-/// Allocates a shared cubemap texture and dispatches CubemapNoise.slang to fill it.
+/// Allocates a shared cubemap texture and dispatches a compute shader to fill it.
 pub struct CubemapTextureGen {
     main_texture_rid: Rid,
     local_texture_rid: Rid,
     size: u32,
     pipeline: Option<ComputePipeline>,
+    pub(crate) shader_path: String,
 }
 
 impl CubemapTextureGen {
@@ -47,6 +90,17 @@ impl CubemapTextureGen {
             local_texture_rid: Rid::Invalid,
             size: 0,
             pipeline: None,
+            shader_path: CUBEMAP_NOISE_SHADER.to_string(),
+        }
+    }
+
+    pub fn with_shader_path(path: &str) -> Self {
+        Self {
+            main_texture_rid: Rid::Invalid,
+            local_texture_rid: Rid::Invalid,
+            size: 0,
+            pipeline: None,
+            shader_path: path.to_string(),
         }
     }
 
@@ -113,10 +167,10 @@ impl CubemapTextureGen {
         (main_rid, local_rid)
     }
 
-    /// Loads the CubemapNoise compute shader and creates the pipeline.
+    /// Loads the compute shader and creates the pipeline.
     pub fn init_pipeline(&mut self, rd: &mut Gd<RenderingDevice>) {
         if self.pipeline.is_none() {
-            self.pipeline = Some(ComputePipeline::new(rd, CUBEMAP_NOISE_SHADER));
+            self.pipeline = Some(ComputePipeline::new(rd, &self.shader_path));
         }
     }
 
@@ -127,7 +181,14 @@ impl CubemapTextureGen {
     ///   1 — `face_index` (UNIFORM_BUFFER, u32)
     ///   2 — `tex_size`   (UNIFORM_BUFFER, u32)
     ///   3 — `radius`     (UNIFORM_BUFFER, f32)
-    pub fn generate(&self, rd: &mut Gd<RenderingDevice>, size: u32, radius: f32) {
+    ///   4 — `terrain_params` (UNIFORM_BUFFER, TerrainParams) [optional]
+    pub fn generate(
+        &self,
+        rd: &mut Gd<RenderingDevice>,
+        size: u32,
+        radius: f32,
+        terrain_params: Option<&TerrainParams>,
+    ) {
         let pipeline = self
             .pipeline
             .as_ref()
@@ -137,7 +198,16 @@ impl CubemapTextureGen {
         let workgroups_y = (size + 7) / 8;
 
         for face in 0u32..6 {
-            self.dispatch_face(rd, pipeline, face, size, radius, workgroups_x, workgroups_y);
+            self.dispatch_face(
+                rd,
+                pipeline,
+                face,
+                size,
+                radius,
+                terrain_params,
+                workgroups_x,
+                workgroups_y,
+            );
         }
     }
 
@@ -149,6 +219,7 @@ impl CubemapTextureGen {
         face: u32,
         size: u32,
         radius: f32,
+        terrain_params: Option<&TerrainParams>,
         workgroups_x: u32,
         workgroups_y: u32,
     ) {
@@ -157,6 +228,7 @@ impl CubemapTextureGen {
         let pipe = pipeline.pipeline();
 
         let rd_send = RdSend(rd.clone());
+        let params_copy = terrain_params.copied();
 
         on_render_thread_sync(move || {
             let mut rd = rd_send;
@@ -200,6 +272,20 @@ impl CubemapTextureGen {
             uniforms.push(&size_uniform);
             uniforms.push(&radius_uniform);
 
+            // Binding 4: terrain_params (optional)
+            let params_rid = if let Some(p) = params_copy {
+                let bytes = bytemuck::bytes_of(&p);
+                let rid = create_uniform_buffer_raw(&mut rd.0, bytes);
+                let mut params_uniform = RdUniform::new_gd();
+                params_uniform.set_binding(4);
+                params_uniform.set_uniform_type(UniformType::UNIFORM_BUFFER);
+                params_uniform.add_id(rid);
+                uniforms.push(&params_uniform);
+                Some(rid)
+            } else {
+                None
+            };
+
             let uniform_set = rd.0.uniform_set_create(&uniforms, shader, 0);
             assert!(
                 uniform_set.is_valid(),
@@ -219,6 +305,9 @@ impl CubemapTextureGen {
             rd.0.free_rid(face_rid);
             rd.0.free_rid(size_rid);
             rd.0.free_rid(radius_rid);
+            if let Some(rid) = params_rid {
+                rd.0.free_rid(rid);
+            }
         });
     }
 
@@ -273,6 +362,7 @@ impl CubemapTextureGen {
         rd: &mut Gd<RenderingDevice>,
         new_size: u32,
         radius: f32,
+        terrain_params: Option<&TerrainParams>,
     ) -> (Rid, Rid) {
         // 1. Free old local texture on the local RD (only used for compute, safe to free now).
         if self.local_texture_rid.is_valid() {
@@ -287,7 +377,7 @@ impl CubemapTextureGen {
         // 4. Ensure the pipeline exists (it is size-independent).
         self.init_pipeline(rd);
         // 5. Generate noise into the new texture.
-        self.generate(rd, new_size, radius);
+        self.generate(rd, new_size, radius, terrain_params);
 
         (self.main_texture_rid, old_main)
     }
@@ -301,6 +391,11 @@ impl CubemapTextureGen {
     pub fn has_texture(&self) -> bool {
         self.local_texture_rid.is_valid()
     }
+
+    /// Returns the current cubemap resolution.
+    pub fn current_size(&self) -> u32 {
+        self.size
+    }
 }
 
 #[cfg(test)]
@@ -312,5 +407,12 @@ mod tests {
         let gen = CubemapTextureGen::new();
         assert!(!gen.main_texture_rid().is_valid());
         assert_eq!(gen.size, 0);
+    }
+
+    #[test]
+    fn test_cubemap_texture_gen_custom_shader() {
+        let gen = CubemapTextureGen::with_shader_path("res://custom/MyNoise.slang");
+        assert!(!gen.main_texture_rid().is_valid());
+        assert_eq!(gen.shader_path, "res://custom/MyNoise.slang");
     }
 }

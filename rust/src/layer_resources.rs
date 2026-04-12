@@ -10,6 +10,10 @@ pub struct CesHeightLayerResource {
     #[export]
     #[init(val = true)]
     pub enabled: bool,
+
+    #[export]
+    #[init(val = GString::new())]
+    pub shader_path: GString,
 }
 
 /// Base resource for texture layers. GDScript subclasses

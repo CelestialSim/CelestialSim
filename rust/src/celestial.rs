@@ -1,8 +1,10 @@
 use crate::algo::run_algo::{CesRunAlgo, RunAlgoConfig};
 use crate::layer_resources::{CesHeightLayerResource, CesTextureLayerResource};
+use crate::layers::height_shader_terrain::CesHeightShaderTerrain;
 use crate::layers::sphere_terrain::CesSphereTerrain;
 use crate::layers::CesLayer;
-use crate::texture_gen::CubemapTextureGen;
+use crate::texture_gen::{CubemapTextureGen, TerrainParams};
+use godot::builtin::Callable;
 use godot::builtin::{
     PackedInt32Array, PackedVector2Array, PackedVector3Array, Transform3D, Variant, Vector2,
     Vector3,
@@ -19,18 +21,17 @@ use godot::prelude::*;
 use std::thread;
 use std::time::{Duration, Instant};
 
+const TERRAIN_NORMAL_SHADER: &str = "res://addons/celestial_sim/shaders/TerrainNormal.slang";
+
 /// Safely iterate a typed array, skipping null/nil entries.
 /// This prevents panics when the user has added an array slot
 /// but hasn't selected a subclass yet (the slot is &lt;empty&gt;/nil).
-fn non_null_elements<T: GodotClass + Inherits<Resource>>(
-    arr: &Array<Gd<T>>,
-) -> Vec<Gd<T>> {
+fn non_null_elements<T: GodotClass + Inherits<Resource>>(arr: &Array<Gd<T>>) -> Vec<Gd<T>> {
     let mut result = Vec::new();
     for i in 0..arr.len() {
         // Array::get calls from_variant which panics on nil → Gd<T>.
         // Catch the panic to gracefully skip null slots.
-        if let Ok(Some(gd)) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arr.get(i)))
+        if let Ok(Some(gd)) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| arr.get(i)))
         {
             result.push(gd);
         }
@@ -48,22 +49,56 @@ fn layer_script_class(layer: &Gd<CesTextureLayerResource>) -> StringName {
     script.get_global_name()
 }
 
-/// Compute a fingerprint of height + texture layers for change detection.
-fn layers_fingerprint(
+/// Compute a lightweight structural ID of height + texture layers.
+/// Only tracks array lengths, instance IDs, class names, and enabled flags.
+/// Property values are NOT included — the `Resource.changed` signal handles that.
+fn layers_structure_id(
     height: &Array<Gd<CesHeightLayerResource>>,
     texture: &Array<Gd<CesTextureLayerResource>>,
 ) -> String {
     let mut parts = Vec::new();
     parts.push(format!("len:{}:{}", height.len(), texture.len()));
     for l in non_null_elements(height) {
-        parts.push(format!("H:{}", l.bind().enabled));
+        parts.push(format!("H:{}:{}", l.instance_id(), l.bind().enabled));
     }
     for l in non_null_elements(texture) {
         let class = layer_script_class(&l);
-        let enabled = l.bind().enabled;
-        parts.push(format!("T:{}:{}", class, enabled));
+        // Include structural properties so changing them triggers a full restart.
+        // Use Display on Variant to avoid panics when the property doesn't exist.
+        let resolution = l.get("resolution");
+        let gen_normals = l.get("generate_normal_map");
+        let shader_path = l.get("compute_shader_path");
+        parts.push(format!(
+            "T:{}:{}:{}:{}:{}:{}",
+            l.instance_id(),
+            class,
+            l.bind().enabled,
+            resolution,
+            gen_normals,
+            shader_path
+        ));
     }
     parts.join(",")
+}
+
+/// Read terrain params from a CesTerrainTextureLayer GDScript resource.
+fn read_terrain_params(layer: &Gd<CesTextureLayerResource>) -> TerrainParams {
+    TerrainParams {
+        height_tiles: layer.get("height_tiles").to::<f32>(),
+        height_octaves: layer.get("height_octaves").to::<i32>(),
+        height_amp: layer.get("height_amp").to::<f32>(),
+        height_gain: layer.get("height_gain").to::<f32>(),
+        height_lacunarity: layer.get("height_lacunarity").to::<f32>(),
+        erosion_tiles: layer.get("erosion_tiles").to::<f32>(),
+        erosion_octaves: layer.get("erosion_octaves").to::<i32>(),
+        erosion_gain: layer.get("erosion_gain").to::<f32>(),
+        erosion_lacunarity: layer.get("erosion_lacunarity").to::<f32>(),
+        erosion_slope_strength: layer.get("erosion_slope_strength").to::<f32>(),
+        erosion_branch_strength: layer.get("erosion_branch_strength").to::<f32>(),
+        erosion_strength: layer.get("erosion_strength").to::<f32>(),
+        water_height: layer.get("water_height").to::<f32>(),
+        _pad: [0.0; 3],
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -85,12 +120,22 @@ struct MeshResult {
 }
 
 enum TextureCommand {
-    Regenerate { size: u32, radius: f32 },
+    Regenerate {
+        size: u32,
+        radius: f32,
+        terrain_params: Option<TerrainParams>,
+    },
+    ParamsChanged {
+        terrain_params: TerrainParams,
+        radius: f32,
+    },
 }
 
 struct TextureResult {
     main_texture_rid: Rid,
     old_main_texture_rid: Rid,
+    normal_main_texture_rid: Rid,
+    normal_old_main_texture_rid: Rid,
 }
 
 #[derive(Clone)]
@@ -108,6 +153,8 @@ struct WorkerState {
     graph_generator: Option<CesRunAlgo>,
     layers: Vec<Box<dyn CesLayer>>,
     texture_gen: CubemapTextureGen,
+    normal_texture_gen: CubemapTextureGen,
+    terrain_params: Option<TerrainParams>,
 }
 
 struct ScopedTimer {
@@ -198,6 +245,7 @@ pub struct CesCelestialRust {
     mesh: Option<Gd<ArrayMesh>>,
     active_shader: Option<Gd<Shader>>,
     cubemap_texture: Option<Gd<TextureCubemapRd>>,
+    normal_cubemap_texture: Option<Gd<TextureCubemapRd>>,
     // Threading fields
     work_tx: Option<std::sync::mpsc::Sender<(Vector3, WorkerConfig)>>,
     result_rx: Option<std::sync::mpsc::Receiver<MeshResult>>,
@@ -208,10 +256,16 @@ pub struct CesCelestialRust {
     last_cam_position: Vector3,
     last_obj_transform: Transform3D,
     last_settings: SettingsSnapshot,
-    last_layers_fingerprint: String,
+    last_structure_id: String,
     values_updated: bool,
     is_shutting_down: bool,
     cubemap_resolution_active: u32,
+    /// Set by `Resource.changed` signal handler; indicates layer properties changed.
+    layers_dirty: bool,
+    /// True when dirty flag was caused by a structural change (add/remove/reorder layers).
+    structural_dirty: bool,
+    /// Instance IDs of layers whose "changed" signal we are currently connected to.
+    connected_layer_ids: Vec<i64>,
 }
 
 #[godot_api]
@@ -236,6 +290,7 @@ impl INode3D for CesCelestialRust {
             mesh: None,
             active_shader: None,
             cubemap_texture: None,
+            normal_cubemap_texture: None,
             work_tx: None,
             result_rx: None,
             texture_cmd_tx: None,
@@ -257,7 +312,10 @@ impl INode3D for CesCelestialRust {
             values_updated: false,
             is_shutting_down: false,
             cubemap_resolution_active: 0,
-            last_layers_fingerprint: String::new(),
+            last_structure_id: String::new(),
+            layers_dirty: false,
+            structural_dirty: false,
+            connected_layer_ids: Vec::new(),
         }
     }
 
@@ -282,6 +340,8 @@ impl INode3D for CesCelestialRust {
         // Build runtime layers and texture gen from exported arrays
         let mut runtime_layers: Vec<Box<dyn CesLayer>> = Vec::new();
         let mut texture_gen = CubemapTextureGen::new();
+        let mut normal_texture_gen = CubemapTextureGen::new();
+        let mut terrain_params: Option<TerrainParams> = None;
 
         // Height layers
         if self.height_layers.is_empty() {
@@ -292,23 +352,43 @@ impl INode3D for CesCelestialRust {
                 if !layer_gd.bind().enabled {
                     continue;
                 }
-                runtime_layers.push(Box::new(CesSphereTerrain::new()));
+                let shader_path = layer_gd.bind().shader_path.to_string();
+                if shader_path.is_empty() {
+                    runtime_layers.push(Box::new(CesSphereTerrain::new()));
+                } else {
+                    runtime_layers.push(Box::new(CesHeightShaderTerrain::with_shader_path(
+                        &shader_path,
+                    )));
+                }
             }
         }
 
         // Texture layers — last active layer's shader wins
         self.active_shader = None;
+        godot_print!(
+            "[CesCelestialRust] Processing {} texture layers",
+            self.texture_layers.len()
+        );
         for layer_gd in non_null_elements(&self.texture_layers).into_iter() {
             if !layer_gd.bind().enabled {
+                godot_print!("[CesCelestialRust] Skipping disabled texture layer");
                 continue;
             }
             // Every active texture layer can set a shader (defined in GDScript _init)
             let shader_var = layer_gd.get("shader");
+            godot_print!(
+                "[CesCelestialRust] shader_var is_nil={}",
+                shader_var.is_nil()
+            );
             if !shader_var.is_nil() {
                 self.active_shader = Some(shader_var.to::<Gd<Shader>>());
             }
             // Cubemap layers also generate a texture
             let script_class = layer_script_class(&layer_gd);
+            godot_print!(
+                "[CesCelestialRust] Texture layer class: {}",
+                script_class.to_string()
+            );
             if script_class == StringName::from("CesTextureLayer") {
                 let resolution = layer_gd.get("resolution").to::<u32>();
                 let mut gen = CubemapTextureGen::new();
@@ -317,13 +397,54 @@ impl INode3D for CesCelestialRust {
                 tex.set_texture_rd_rid(gen.main_texture_rid());
                 self.cubemap_texture = Some(tex);
                 texture_gen = gen;
+                godot_print!(
+                    "[CesCelestialRust] Created CesTextureLayer cubemap, resolution={}",
+                    resolution
+                );
+            }
+            if script_class == StringName::from("CesTerrainTextureLayer") {
+                let resolution = layer_gd.get("resolution").to::<u32>();
+                let compute_path = layer_gd.get("compute_shader_path").to::<String>();
+                godot_print!(
+                    "[CesCelestialRust] Terrain texture compute path: {}, resolution={}",
+                    compute_path,
+                    resolution
+                );
+                let mut gen = CubemapTextureGen::with_shader_path(&compute_path);
+                gen.create_shared_cubemap(&mut rd, resolution);
+                let mut tex = TextureCubemapRd::new_gd();
+                tex.set_texture_rd_rid(gen.main_texture_rid());
+                self.cubemap_texture = Some(tex);
+                texture_gen = gen;
+                godot_print!("[CesCelestialRust] Created CesTerrainTextureLayer cubemap");
+
+                // Read terrain params from GDScript layer
+                terrain_params = Some(read_terrain_params(&layer_gd));
+
+                // Normal cubemap (conditional on generate_normal_map)
+                let gen_normals = layer_gd.get("generate_normal_map").to::<bool>();
+                if gen_normals {
+                    let mut ngen = CubemapTextureGen::with_shader_path(TERRAIN_NORMAL_SHADER);
+                    ngen.create_shared_cubemap(&mut rd, resolution);
+                    let mut ntex = TextureCubemapRd::new_gd();
+                    ntex.set_texture_rd_rid(ngen.main_texture_rid());
+                    self.normal_cubemap_texture = Some(ntex);
+                    normal_texture_gen = ngen;
+                    godot_print!("[CesCelestialRust] Created normal cubemap");
+                }
             }
         }
 
-        self.spawn_worker(rd, runtime_layers, texture_gen);
+        self.spawn_worker(
+            rd,
+            runtime_layers,
+            texture_gen,
+            normal_texture_gen,
+            terrain_params,
+        );
         self.cubemap_resolution_active = self.find_cubemap_resolution();
-        self.last_layers_fingerprint =
-            layers_fingerprint(&self.height_layers, &self.texture_layers);
+        self.last_structure_id = layers_structure_id(&self.height_layers, &self.texture_layers);
+        self.connect_layer_signals();
     }
 
     fn ready(&mut self) {
@@ -337,10 +458,40 @@ impl INode3D for CesCelestialRust {
             return;
         }
 
-        // Detect layer array changes (add/remove/reorder/enable toggle)
-        let current_fp = layers_fingerprint(&self.height_layers, &self.texture_layers);
-        if current_fp != self.last_layers_fingerprint {
-            self.restart_with_current_layers();
+        // Detect structural changes (layer added/removed/reordered/enabled toggle)
+        let current_sid = layers_structure_id(&self.height_layers, &self.texture_layers);
+        if current_sid != self.last_structure_id {
+            self.last_structure_id = current_sid;
+            self.disconnect_layer_signals();
+            self.connect_layer_signals();
+            self.layers_dirty = true;
+            self.structural_dirty = true;
+        }
+
+        // Handle dirty flag immediately — the worker thread is the natural gate
+        if self.layers_dirty {
+            self.layers_dirty = false;
+            if self.structural_dirty {
+                // Structural change: full restart (layer add/remove/enable, resolution, normal toggle)
+                self.structural_dirty = false;
+                let t0 = Instant::now();
+                self.restart_with_current_layers();
+                let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                godot_print!("AlgoTiming step Restart: {:.3} ms", ms);
+            } else {
+                // Property-only change (terrain params): send to worker
+                // While the worker is busy, commands queue up; it drains and keeps only the last.
+                self.structural_dirty = false;
+                if let Some(tp) = self.find_terrain_params() {
+                    if let Some(ref tx) = self.texture_cmd_tx {
+                        let _ = tx.send(TextureCommand::ParamsChanged {
+                            terrain_params: tp,
+                            radius: self.radius,
+                        });
+                    }
+                }
+                self.values_updated = true;
+            }
             return;
         }
 
@@ -351,6 +502,7 @@ impl INode3D for CesCelestialRust {
                 let _ = tx.send(TextureCommand::Regenerate {
                     size: new_resolution,
                     radius: self.radius,
+                    terrain_params: self.find_terrain_params(),
                 });
             }
             self.cubemap_resolution_active = new_resolution;
@@ -367,6 +519,20 @@ impl INode3D for CesCelestialRust {
                 // Free the old main texture now that it's no longer referenced by materials.
                 if result.old_main_texture_rid.is_valid() {
                     let old_rid = result.old_main_texture_rid;
+                    crate::compute_utils::on_render_thread(move || {
+                        let mut main_rd =
+                            RenderingServer::singleton().get_rendering_device().unwrap();
+                        main_rd.free_rid(old_rid);
+                    });
+                }
+                // Normal cubemap
+                if result.normal_main_texture_rid.is_valid() {
+                    let mut ntex = TextureCubemapRd::new_gd();
+                    ntex.set_texture_rd_rid(result.normal_main_texture_rid);
+                    self.normal_cubemap_texture = Some(ntex);
+                }
+                if result.normal_old_main_texture_rid.is_valid() {
+                    let old_rid = result.normal_old_main_texture_rid;
                     crate::compute_utils::on_render_thread(move || {
                         let mut main_rd =
                             RenderingServer::singleton().get_rendering_device().unwrap();
@@ -459,6 +625,7 @@ impl CesCelestialRust {
             return;
         }
         self.is_shutting_down = true;
+        self.disconnect_layer_signals();
 
         // Free visible scene resources first.
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -499,6 +666,7 @@ impl CesCelestialRust {
                     // before freeing the local RD they reference.
                     crate::compute_utils::on_render_thread_sync(|| {});
                     worker.texture_gen.dispose_local(&mut worker.rd);
+                    worker.normal_texture_gen.dispose_local(&mut worker.rd);
                     worker.rd.free();
                 }
                 Err(_) => {
@@ -533,6 +701,8 @@ impl CesCelestialRust {
 
         let mut runtime_layers: Vec<Box<dyn CesLayer>> = Vec::new();
         let mut texture_gen = CubemapTextureGen::new();
+        let mut normal_texture_gen = CubemapTextureGen::new();
+        let mut terrain_params: Option<TerrainParams> = None;
         if self.height_layers.is_empty() {
             runtime_layers.push(Box::new(CesSphereTerrain::new()));
         } else {
@@ -540,7 +710,14 @@ impl CesCelestialRust {
                 if !layer_gd.bind().enabled {
                     continue;
                 }
-                runtime_layers.push(Box::new(CesSphereTerrain::new()));
+                let shader_path = layer_gd.bind().shader_path.to_string();
+                if shader_path.is_empty() {
+                    runtime_layers.push(Box::new(CesSphereTerrain::new()));
+                } else {
+                    runtime_layers.push(Box::new(CesHeightShaderTerrain::with_shader_path(
+                        &shader_path,
+                    )));
+                }
             }
         }
 
@@ -554,6 +731,9 @@ impl CesCelestialRust {
                 self.active_shader = Some(shader_var.to::<Gd<Shader>>());
             }
             let script_class = layer_script_class(&layer_gd);
+            if self.show_debug_messages {
+                eprintln!("Texture layer class: {}", script_class.to_string());
+            }
             if script_class == StringName::from("CesTextureLayer") {
                 let resolution = layer_gd.get("resolution").to::<u32>();
                 let mut gen = CubemapTextureGen::new();
@@ -563,12 +743,47 @@ impl CesCelestialRust {
                 self.cubemap_texture = Some(tex);
                 texture_gen = gen;
             }
+            if script_class == StringName::from("CesTerrainTextureLayer") {
+                let resolution = layer_gd.get("resolution").to::<u32>();
+                let compute_path = layer_gd.get("compute_shader_path").to::<String>();
+                if self.show_debug_messages {
+                    eprintln!("Terrain texture compute path: {}", compute_path);
+                }
+                let mut gen = CubemapTextureGen::with_shader_path(&compute_path);
+                gen.create_shared_cubemap(&mut rd, resolution);
+                let mut tex = TextureCubemapRd::new_gd();
+                tex.set_texture_rd_rid(gen.main_texture_rid());
+                self.cubemap_texture = Some(tex);
+                texture_gen = gen;
+
+                // Read terrain params from GDScript layer
+                terrain_params = Some(read_terrain_params(&layer_gd));
+
+                // Normal cubemap (conditional on generate_normal_map)
+                let gen_normals = layer_gd.get("generate_normal_map").to::<bool>();
+                if gen_normals {
+                    let mut ngen = CubemapTextureGen::with_shader_path(TERRAIN_NORMAL_SHADER);
+                    ngen.create_shared_cubemap(&mut rd, resolution);
+                    let mut ntex = TextureCubemapRd::new_gd();
+                    ntex.set_texture_rd_rid(ngen.main_texture_rid());
+                    self.normal_cubemap_texture = Some(ntex);
+                    normal_texture_gen = ngen;
+                } else {
+                    self.normal_cubemap_texture = None;
+                }
+            }
         }
 
-        self.spawn_worker(rd, runtime_layers, texture_gen);
+        self.spawn_worker(
+            rd,
+            runtime_layers,
+            texture_gen,
+            normal_texture_gen,
+            terrain_params,
+        );
         self.cubemap_resolution_active = self.find_cubemap_resolution();
-        self.last_layers_fingerprint =
-            layers_fingerprint(&self.height_layers, &self.texture_layers);
+        self.last_structure_id = layers_structure_id(&self.height_layers, &self.texture_layers);
+        self.connect_layer_signals();
     }
 
     fn check_cubemap_restart_needed(&self) -> bool {
@@ -576,7 +791,9 @@ impl CesCelestialRust {
             if !layer_gd.bind().enabled {
                 continue;
             }
-            if layer_script_class(&layer_gd) == StringName::from("CesTextureLayer") {
+            if layer_script_class(&layer_gd) == StringName::from("CesTextureLayer")
+                || layer_script_class(&layer_gd) == StringName::from("CesTerrainTextureLayer")
+            {
                 let resolution = layer_gd.get("resolution").to::<u32>();
                 return self.cubemap_resolution_active != 0
                     && resolution != self.cubemap_resolution_active;
@@ -649,6 +866,12 @@ impl CesCelestialRust {
             if let Some(ref cubemap) = self.cubemap_texture {
                 material.set_shader_parameter("planet_texture", &cubemap.to_variant());
             }
+            if let Some(ref normal_cubemap) = self.normal_cubemap_texture {
+                material.set_shader_parameter("normal_cubemap", &normal_cubemap.to_variant());
+                material.set_shader_parameter("use_normal_cubemap", &true.to_variant());
+            } else {
+                material.set_shader_parameter("use_normal_cubemap", &false.to_variant());
+            }
             new_mesh.surface_set_material(0, &material);
         }
 
@@ -690,6 +913,8 @@ impl CesCelestialRust {
         rd: Gd<RenderingDevice>,
         layers: Vec<Box<dyn CesLayer>>,
         texture_gen: CubemapTextureGen,
+        normal_texture_gen: CubemapTextureGen,
+        terrain_params: Option<TerrainParams>,
     ) {
         let (work_tx, work_rx) = std::sync::mpsc::channel::<(Vector3, WorkerConfig)>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<MeshResult>();
@@ -704,30 +929,135 @@ impl CesCelestialRust {
             graph_generator: None,
             layers,
             texture_gen,
+            normal_texture_gen,
+            terrain_params,
         };
 
         let handle = std::thread::spawn(move || {
+            // Apply terrain params to height layers
+            if let Some(ref tp) = worker.terrain_params {
+                for layer in worker.layers.iter_mut() {
+                    layer.set_terrain_params(tp);
+                }
+            }
+
             // Generate cubemap texture once at startup (only if a cubemap node was found)
             if worker.texture_gen.has_texture() {
+                eprintln!("[CesCelestialRust] texture_gen: has_texture=true, shader={}, size={}, radius={}", worker.texture_gen.shader_path, cubemap_size, radius);
+                let t0 = Instant::now();
                 worker.texture_gen.init_pipeline(&mut worker.rd);
-                worker
-                    .texture_gen
-                    .generate(&mut worker.rd, cubemap_size, radius);
+                eprintln!("[CesCelestialRust] texture_gen: pipeline init OK");
+                worker.texture_gen.generate(
+                    &mut worker.rd,
+                    cubemap_size,
+                    radius,
+                    worker.terrain_params.as_ref(),
+                );
+                let tex_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                godot_print!("AlgoTiming step TextureColor: {:.3} ms", tex_ms);
+            } else {
+                eprintln!("[CesCelestialRust] texture_gen: has_texture=false, skipping");
+            }
+
+            // Generate normal cubemap
+            if worker.normal_texture_gen.has_texture() {
+                eprintln!(
+                    "[CesCelestialRust] normal_texture_gen: init+generate, size={}, radius={}",
+                    cubemap_size, radius
+                );
+                let t0 = Instant::now();
+                worker.normal_texture_gen.init_pipeline(&mut worker.rd);
+                worker.normal_texture_gen.generate(
+                    &mut worker.rd,
+                    cubemap_size,
+                    radius,
+                    worker.terrain_params.as_ref(),
+                );
+                let norm_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                godot_print!("AlgoTiming step TextureNormal: {:.3} ms", norm_ms);
             }
 
             while let Ok((cam_local, config)) = work_rx.recv() {
-                // Process any pending texture regeneration commands first
+                // Drain all pending commands — coalesce multiple ParamsChanged into one
+                let mut last_params: Option<(TerrainParams, f32)> = None;
                 while let Ok(cmd) = texture_cmd_rx.try_recv() {
                     match cmd {
-                        TextureCommand::Regenerate { size, radius } => {
-                            let (new_rid, old_rid) =
-                                worker.texture_gen.resize(&mut worker.rd, size, radius);
+                        TextureCommand::Regenerate {
+                            size,
+                            radius,
+                            terrain_params,
+                        } => {
+                            let t0 = Instant::now();
+                            let (new_rid, old_rid) = worker.texture_gen.resize(
+                                &mut worker.rd,
+                                size,
+                                radius,
+                                terrain_params.as_ref(),
+                            );
+                            let tex_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                            let t1 = Instant::now();
+                            let (normal_new_rid, normal_old_rid) =
+                                if worker.normal_texture_gen.has_texture() {
+                                    worker.normal_texture_gen.resize(
+                                        &mut worker.rd,
+                                        size,
+                                        radius,
+                                        terrain_params.as_ref(),
+                                    )
+                                } else {
+                                    (Rid::Invalid, Rid::Invalid)
+                                };
+                            let norm_ms = t1.elapsed().as_secs_f64() * 1000.0;
+                            godot_print!("AlgoTiming step TextureColor: {:.3} ms", tex_ms);
+                            godot_print!("AlgoTiming step TextureNormal: {:.3} ms", norm_ms);
                             let _ = texture_result_tx.send(TextureResult {
                                 main_texture_rid: new_rid,
                                 old_main_texture_rid: old_rid,
+                                normal_main_texture_rid: normal_new_rid,
+                                normal_old_main_texture_rid: normal_old_rid,
                             });
                         }
+                        TextureCommand::ParamsChanged {
+                            terrain_params,
+                            radius,
+                        } => {
+                            // Keep only the latest ParamsChanged
+                            last_params = Some((terrain_params, radius));
+                        }
                     }
+                }
+
+                // Process the latest ParamsChanged (if any)
+                if let Some((terrain_params, radius)) = last_params {
+                    for layer in worker.layers.iter_mut() {
+                        layer.set_terrain_params(&terrain_params);
+                    }
+                    worker.terrain_params = Some(terrain_params);
+
+                    let size = worker.texture_gen.current_size();
+                    let t0 = Instant::now();
+                    worker.texture_gen.generate(
+                        &mut worker.rd,
+                        size,
+                        radius,
+                        worker.terrain_params.as_ref(),
+                    );
+                    let tex_ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    let t1 = Instant::now();
+                    if worker.normal_texture_gen.has_texture() {
+                        worker.normal_texture_gen.generate(
+                            &mut worker.rd,
+                            size,
+                            radius,
+                            worker.terrain_params.as_ref(),
+                        );
+                    }
+                    let norm_ms = t1.elapsed().as_secs_f64() * 1000.0;
+                    godot_print!("AlgoTiming step TextureColor: {:.3} ms", tex_ms);
+                    godot_print!("AlgoTiming step TextureNormal: {:.3} ms", norm_ms);
+
+                    // Reset subdivision so heights are recomputed
+                    worker.graph_generator = None;
                 }
                 let algo_config = RunAlgoConfig {
                     subdivisions: config.subdivisions,
@@ -787,11 +1117,25 @@ impl CesCelestialRust {
             if !layer_gd.bind().enabled {
                 continue;
             }
-            if layer_script_class(&layer_gd) == StringName::from("CesTextureLayer") {
+            if layer_script_class(&layer_gd) == StringName::from("CesTextureLayer")
+                || layer_script_class(&layer_gd) == StringName::from("CesTerrainTextureLayer")
+            {
                 return layer_gd.get("resolution").to::<u32>();
             }
         }
         512
+    }
+
+    fn find_terrain_params(&self) -> Option<TerrainParams> {
+        for layer_gd in non_null_elements(&self.texture_layers).into_iter() {
+            if !layer_gd.bind().enabled {
+                continue;
+            }
+            if layer_script_class(&layer_gd) == StringName::from("CesTerrainTextureLayer") {
+                return Some(read_terrain_params(&layer_gd));
+            }
+        }
+        None
     }
 
     fn update_collision(&mut self) {
@@ -804,6 +1148,57 @@ impl CesCelestialRust {
                 collision.set_shape(&shape);
             }
         }
+    }
+
+    /// Connect the `Resource.changed` signal on all active layers so that
+    /// property edits (e.g. slider drags) set the dirty flag without polling.
+    fn connect_layer_signals(&mut self) {
+        let callable = Callable::from_object_method(&self.to_gd(), "on_layer_changed");
+        for l in non_null_elements(&self.height_layers) {
+            let id = l.instance_id().to_i64();
+            if self.connected_layer_ids.contains(&id) {
+                continue;
+            }
+            l.clone().upcast::<Object>().connect("changed", &callable);
+            self.connected_layer_ids.push(id);
+            godot_print!(
+                "[CesCelestialRust] Connected changed signal on height layer id={}",
+                id
+            );
+        }
+        for l in non_null_elements(&self.texture_layers) {
+            let id = l.instance_id().to_i64();
+            if self.connected_layer_ids.contains(&id) {
+                continue;
+            }
+            l.clone().upcast::<Object>().connect("changed", &callable);
+            self.connected_layer_ids.push(id);
+            godot_print!(
+                "[CesCelestialRust] Connected changed signal on texture layer id={}",
+                id
+            );
+        }
+    }
+
+    /// Disconnect all previously connected `Resource.changed` signals.
+    fn disconnect_layer_signals(&mut self) {
+        let callable = Callable::from_object_method(&self.to_gd(), "on_layer_changed");
+        for id in self.connected_layer_ids.drain(..) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Ok(obj) = Gd::<Object>::try_from_instance_id(InstanceId::from_i64(id)) {
+                    obj.clone().disconnect("changed", &callable);
+                }
+            }));
+        }
+    }
+}
+
+#[godot_api]
+impl CesCelestialRust {
+    #[func]
+    fn on_layer_changed(&mut self) {
+        godot_print!("[CesCelestialRust] on_layer_changed signal received");
+        self.layers_dirty = true;
     }
 }
 
