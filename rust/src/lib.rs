@@ -4,6 +4,8 @@ use godot::prelude::*;
 mod algo;
 #[allow(dead_code)]
 mod buffer_info;
+#[allow(dead_code)]
+mod camera_snapshot_texture;
 mod celestial;
 mod compositor;
 #[allow(dead_code)]

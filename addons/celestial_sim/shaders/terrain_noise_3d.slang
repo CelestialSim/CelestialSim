@@ -2,6 +2,11 @@ module terrain_noise_3d;
 
 // 3D gradient noise utilities and Terrain3D-style terrain helpers.
 // Based on: https://iquilezles.org/articles/gradientnoise/
+// Original 2D erosion terrain: https://www.shadertoy.com/view/7ljcRW
+// Terrain erosion fork: https://www.shadertoy.com/view/MtGcWh
+// Author: Clay John
+// Gavoronoise contribution adapted from https://www.shadertoy.com/view/llsGWl
+// Author: guil
 
 static const float PI = 3.14159265358979;
 

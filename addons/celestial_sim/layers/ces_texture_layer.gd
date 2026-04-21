@@ -7,9 +7,17 @@ extends CesTextureLayerResource
 	set(v):
 		resolution = v
 		emit_changed()
-@export_range(0, 4) var max_lod_levels: int = 4:
+@export_range(0, 4) var max_snapshot_levels: int = 4:
 	set(v):
-		max_lod_levels = v
+		max_snapshot_levels = v
+		emit_changed()
+@export var show_snapshot_borders: bool = true:
+	set(v):
+		show_snapshot_borders = v
+		emit_changed()
+@export var snapshot_color_shader: String = "res://addons/celestial_sim/shaders/SnapshotPatchSimpleNoise.slang":
+	set(v):
+		snapshot_color_shader = v
 		emit_changed()
 var shader: Shader
 

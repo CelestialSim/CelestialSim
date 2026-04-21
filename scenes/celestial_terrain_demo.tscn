@@ -7,8 +7,9 @@ shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
 
 [sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_t1"]
 script = ExtResource("1_terrain")
-resolution = 500
-height_tiles = 11.048
+resolution = 200
+max_snapshot_levels = 4
+height_tiles = 11.207
 
 [node name="TerrainDemo" type="Node3D" unique_id=946981429]
 
@@ -23,7 +24,7 @@ texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerRes
 transform = Transform3D(0.9775558, 0, -0.21067649, 0, 1, 0, 0.21067649, 0, 0.9775558, 0, 0, 0)
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=1889152311]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 12)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.8815696, 0, 9.887062)
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=433354937]
 transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)

@@ -1,0 +1,35 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://addons/celestial_sim/layers/ces_texture_layer.gd" id="1_texture"]
+[ext_resource type="Script" path="res://scripts/lod_test_camera.gd" id="2_camera"]
+
+[sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_dbg1"]
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_dbg1"]
+script = ExtResource("1_texture")
+resolution = 512
+max_snapshot_levels = 1
+
+[node name="SnapshotDebug" type="Node3D"]
+
+[node name="Planet" type="CesCelestialRust" parent="."]
+radius = 1.51
+triangle_screen_size = 0.0
+show_debug_messages = true
+height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_dbg1")])
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_dbg1")])
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 5)
+script = ExtResource("2_camera")
+target = NodePath("../Planet")
+orbit_speed = 0.3
+zoom_speed = 2.0
+min_distance = 1.6
+max_distance = 10.0
+log_interval = 2.0
+auto_orbit = true
+auto_zoom_in = false
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)

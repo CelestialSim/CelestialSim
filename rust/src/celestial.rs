@@ -1,4 +1,5 @@
 use crate::algo::run_algo::{CesRunAlgo, RunAlgoConfig};
+use crate::camera_snapshot_texture::CameraSnapshotTexture;
 use crate::layer_resources::{CesHeightLayerResource, CesTextureLayerResource};
 use crate::layers::height_shader_terrain::CesHeightShaderTerrain;
 use crate::layers::sphere_terrain::CesSphereTerrain;
@@ -13,8 +14,9 @@ use godot::classes::mesh::ArrayType;
 use godot::classes::mesh::PrimitiveType;
 use godot::classes::notify::Node3DNotification;
 use godot::classes::{
-    ArrayMesh, Camera3D, CollisionShape3D, ConcavePolygonShape3D, Engine, INode3D, Node3D,
-    RenderingDevice, RenderingServer, Script, Shader, ShaderMaterial, StaticBody3D,
+    ArrayMesh, Camera3D, CollisionShape3D, ConcavePolygonShape3D, Engine, INode3D, Node,
+    Node3D,
+    RenderingDevice, RenderingServer, Script, Shader, ShaderMaterial, StaticBody3D, Texture2Drd,
     TextureCubemapRd,
 };
 use godot::prelude::*;
@@ -68,14 +70,18 @@ fn layers_structure_id(
         let resolution = l.get("resolution");
         let gen_normals = l.get("generate_normal_map");
         let shader_path = l.get("compute_shader_path");
+        let max_snapshot = l.get("max_snapshot_levels");
+        let snapshot_shader = l.get("snapshot_color_shader");
         parts.push(format!(
-            "T:{}:{}:{}:{}:{}:{}",
+            "T:{}:{}:{}:{}:{}:{}:{}:{}",
             l.instance_id(),
             class,
             l.bind().enabled,
             resolution,
             gen_normals,
-            shader_path
+            shader_path,
+            max_snapshot,
+            snapshot_shader
         ));
     }
     parts.join(",")
@@ -101,6 +107,28 @@ fn read_terrain_params(layer: &Gd<CesTextureLayerResource>) -> TerrainParams {
     }
 }
 
+fn read_show_snapshot_borders(
+    texture: &Array<Gd<CesTextureLayerResource>>,
+    fallback: bool,
+) -> bool {
+    for layer_gd in non_null_elements(texture).into_iter() {
+        if !layer_gd.bind().enabled {
+            continue;
+        }
+        let class = layer_script_class(&layer_gd);
+        if class == StringName::from("CesTextureLayer")
+            || class == StringName::from("CesTerrainTextureLayer")
+        {
+            let value = layer_gd.get("show_snapshot_borders");
+            if !value.is_nil() {
+                return value.to::<bool>();
+            }
+            return fallback;
+        }
+    }
+    fallback
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct SettingsSnapshot {
     radius: f32,
@@ -111,12 +139,19 @@ struct SettingsSnapshot {
     generate_collision: bool,
     show_debug_messages: bool,
     seed: i32,
+    debug_snapshot_angle_offset: f32,
+    show_snapshot_borders: bool,
 }
 
 struct MeshResult {
     pos: Vec<Vector3>,
     triangles: Vec<i32>,
     uv: Vec<Vector2>,
+    /// Snapshot data (bundled with mesh result). Empty if no snapshots.
+    snapshot_main_rids: Vec<Rid>,
+    snapshot_normal_main_rids: Vec<Rid>,
+    snapshot_level_info: Vec<(Vector3, Vector3, Vector3, f32)>,
+    snapshot_updated: bool,
 }
 
 enum TextureCommand {
@@ -146,6 +181,8 @@ struct WorkerConfig {
     precise_normals: bool,
     low_poly_look: bool,
     show_debug_messages: bool,
+    debug_snapshot_angle_offset: f32,
+    show_snapshot_borders: bool,
 }
 
 struct WorkerState {
@@ -155,6 +192,7 @@ struct WorkerState {
     texture_gen: CubemapTextureGen,
     normal_texture_gen: CubemapTextureGen,
     terrain_params: Option<TerrainParams>,
+    snapshot_chain: CameraSnapshotTexture,
 }
 
 struct ScopedTimer {
@@ -206,6 +244,9 @@ pub struct CesCelestialRust {
     gameplay_camera: Option<Gd<Camera3D>>,
 
     #[export]
+    use_editor_camera: bool,
+
+    #[export]
     radius: f32,
 
     #[export]
@@ -235,6 +276,15 @@ pub struct CesCelestialRust {
     #[export]
     seed: i32,
 
+    /// Debug: angular offset (radians) applied to snapshot center direction.
+    /// Set non-zero to animate snapshot positions independently of camera.
+    #[export]
+    debug_snapshot_angle_offset: f32,
+
+    /// Show red debug borders on LOD snapshot patches.
+    #[export]
+    show_snapshot_borders: bool,
+
     #[export]
     height_layers: Array<Gd<CesHeightLayerResource>>,
 
@@ -246,6 +296,9 @@ pub struct CesCelestialRust {
     active_shader: Option<Gd<Shader>>,
     cubemap_texture: Option<Gd<TextureCubemapRd>>,
     normal_cubemap_texture: Option<Gd<TextureCubemapRd>>,
+    snapshot_textures: Vec<Option<Gd<Texture2Drd>>>,
+    snapshot_normal_textures: Vec<Option<Gd<Texture2Drd>>>,
+    snapshot_info: Vec<(Vector3, Vector3, Vector3, f32)>,
     // Threading fields
     work_tx: Option<std::sync::mpsc::Sender<(Vector3, WorkerConfig)>>,
     result_rx: Option<std::sync::mpsc::Receiver<MeshResult>>,
@@ -274,6 +327,7 @@ impl INode3D for CesCelestialRust {
         Self {
             base,
             gameplay_camera: None,
+            use_editor_camera: true,
             radius: 1.0,
             subdivisions: 3,
             triangle_screen_size: 0.1,
@@ -284,6 +338,8 @@ impl INode3D for CesCelestialRust {
             show_process_timing: false,
             simulated_process_delay_ms: 0,
             seed: 0,
+            debug_snapshot_angle_offset: 0.0,
+            show_snapshot_borders: true,
             height_layers: Array::new(),
             texture_layers: Array::new(),
             instance: Rid::Invalid,
@@ -291,6 +347,10 @@ impl INode3D for CesCelestialRust {
             active_shader: None,
             cubemap_texture: None,
             normal_cubemap_texture: None,
+            snapshot_textures: Vec::new(),
+            snapshot_normal_textures: Vec::new(),
+            snapshot_info: Vec::new(),
+
             work_tx: None,
             result_rx: None,
             texture_cmd_tx: None,
@@ -308,6 +368,8 @@ impl INode3D for CesCelestialRust {
                 generate_collision: false,
                 show_debug_messages: false,
                 seed: 0,
+                debug_snapshot_angle_offset: 0.0,
+                show_snapshot_borders: true,
             },
             values_updated: false,
             is_shutting_down: false,
@@ -320,6 +382,13 @@ impl INode3D for CesCelestialRust {
     }
 
     fn enter_tree(&mut self) {
+        if Engine::singleton().is_editor_hint() {
+            self.is_shutting_down = false;
+            self.gen_mesh_running = false;
+            self.values_updated = true;
+            return;
+        }
+
         self.is_shutting_down = false;
         self.gen_mesh_running = false;
         self.values_updated = true;
@@ -365,6 +434,7 @@ impl INode3D for CesCelestialRust {
 
         // Texture layers — last active layer's shader wins
         self.active_shader = None;
+        let mut snapshot_chain = CameraSnapshotTexture::new(0, 512, None, None);
         godot_print!(
             "[CesCelestialRust] Processing {} texture layers",
             self.texture_layers.len()
@@ -401,6 +471,43 @@ impl INode3D for CesCelestialRust {
                     "[CesCelestialRust] Created CesTextureLayer cubemap, resolution={}",
                     resolution
                 );
+                // LOD chain for CesTextureLayer (no normals)
+                let max_lod = layer_gd.get("max_snapshot_levels");
+                let max_snapshot_levels = if max_lod.is_nil() {
+                    0u32
+                } else {
+                    max_lod.to::<u32>()
+                };
+                if max_snapshot_levels > 0 {
+                    let color_shader_var = layer_gd.get("snapshot_color_shader");
+                    let color_shader = if color_shader_var.is_nil()
+                        || color_shader_var.to::<String>().is_empty()
+                    {
+                        None
+                    } else {
+                        Some(color_shader_var.to::<String>())
+                    };
+                    let mut chain = CameraSnapshotTexture::new(
+                        max_snapshot_levels,
+                        resolution,
+                        color_shader,
+                        None,
+                    );
+                    chain.allocate_textures(&mut rd);
+                    self.snapshot_textures.clear();
+                    self.snapshot_normal_textures.clear();
+                    for i in 0..chain.levels.len() {
+                        let mut tex2d = Texture2Drd::new_gd();
+                        tex2d.set_texture_rd_rid(chain.main_texture_rid(i));
+                        self.snapshot_textures.push(Some(tex2d));
+                    }
+                    snapshot_chain = chain;
+                    godot_print!(
+                        "[Snapshot] Allocated {} LOD patches (resolution={})",
+                        self.snapshot_textures.len(),
+                        resolution
+                    );
+                }
             }
             if script_class == StringName::from("CesTerrainTextureLayer") {
                 let resolution = layer_gd.get("resolution").to::<u32>();
@@ -432,6 +539,61 @@ impl INode3D for CesCelestialRust {
                     normal_texture_gen = ngen;
                     godot_print!("[CesCelestialRust] Created normal cubemap");
                 }
+                // LOD chain for CesTerrainTextureLayer
+                let max_lod = layer_gd.get("max_snapshot_levels");
+                let max_snapshot_levels = if max_lod.is_nil() {
+                    0u32
+                } else {
+                    max_lod.to::<u32>()
+                };
+                if max_snapshot_levels > 0 {
+                    let color_shader_var = layer_gd.get("snapshot_color_shader");
+                    let color_shader = if color_shader_var.is_nil()
+                        || color_shader_var.to::<String>().is_empty()
+                    {
+                        None
+                    } else {
+                        Some(color_shader_var.to::<String>())
+                    };
+                    let normal_shader_var = layer_gd.get("snapshot_normal_shader");
+                    let normal_shader = if normal_shader_var.is_nil()
+                        || normal_shader_var.to::<String>().is_empty()
+                    {
+                        None
+                    } else if layer_gd.get("generate_normal_map").to::<bool>() {
+                        Some(normal_shader_var.to::<String>())
+                    } else {
+                        None
+                    };
+                    let mut chain = CameraSnapshotTexture::new(
+                        max_snapshot_levels,
+                        resolution,
+                        color_shader,
+                        normal_shader,
+                    );
+                    if let Some(ref tp) = terrain_params {
+                        chain.set_extra_params(bytemuck::bytes_of(tp).to_vec());
+                    }
+                    chain.allocate_textures(&mut rd);
+                    self.snapshot_textures.clear();
+                    self.snapshot_normal_textures.clear();
+                    for i in 0..chain.levels.len() {
+                        let mut tex2d = Texture2Drd::new_gd();
+                        tex2d.set_texture_rd_rid(chain.main_texture_rid(i));
+                        self.snapshot_textures.push(Some(tex2d));
+                        if chain.has_normal_textures() {
+                            let mut ntex2d = Texture2Drd::new_gd();
+                            ntex2d.set_texture_rd_rid(chain.normal_main_texture_rid(i));
+                            self.snapshot_normal_textures.push(Some(ntex2d));
+                        }
+                    }
+                    snapshot_chain = chain;
+                    godot_print!(
+                        "[Snapshot] Allocated {} LOD patches (resolution={})",
+                        self.snapshot_textures.len(),
+                        resolution
+                    );
+                }
             }
         }
 
@@ -441,6 +603,7 @@ impl INode3D for CesCelestialRust {
             texture_gen,
             normal_texture_gen,
             terrain_params,
+            snapshot_chain,
         );
         self.cubemap_resolution_active = self.find_cubemap_resolution();
         self.last_structure_id = layers_structure_id(&self.height_layers, &self.texture_layers);
@@ -454,6 +617,19 @@ impl INode3D for CesCelestialRust {
     }
 
     fn process(&mut self, _delta: f64) {
+        let should_run_preview = self.should_run_editor_preview();
+        if !should_run_preview {
+            if self.instance.is_valid() || self.work_tx.is_some() || self.worker_handle.is_some() {
+                self.shutdown_for_reload_or_exit();
+            }
+            return;
+        }
+
+        if !self.instance.is_valid() || self.work_tx.is_none() || self.worker_handle.is_none() {
+            self.restart_with_current_layers();
+            return;
+        }
+
         if self.is_shutting_down {
             return;
         }
@@ -571,6 +747,9 @@ impl INode3D for CesCelestialRust {
         }
         let cam = cam.unwrap();
         let cam_pos = cam.get_global_position();
+
+        let cam_local = global_transform.affine_inverse() * cam_pos;
+
         let current_settings = self.current_settings();
         let has_changed = global_transform != self.last_obj_transform
             || cam_pos != self.last_cam_position
@@ -587,7 +766,6 @@ impl INode3D for CesCelestialRust {
         self.last_settings = current_settings;
         self.values_updated = false;
 
-        let cam_local = global_transform.affine_inverse() * cam_pos;
         let config = WorkerConfig {
             subdivisions: self.subdivisions,
             radius: self.radius,
@@ -595,6 +773,11 @@ impl INode3D for CesCelestialRust {
             precise_normals: self.precise_normals,
             low_poly_look: self.low_poly_look,
             show_debug_messages: self.show_debug_messages,
+            debug_snapshot_angle_offset: self.debug_snapshot_angle_offset,
+            show_snapshot_borders: read_show_snapshot_borders(
+                &self.texture_layers,
+                self.show_snapshot_borders,
+            ),
         };
 
         if let Some(ref work_tx) = self.work_tx {
@@ -651,6 +834,9 @@ impl CesCelestialRust {
         drop(self.texture_cmd_tx.take());
         self.result_rx = None;
         self.texture_result_rx = None;
+        self.snapshot_textures.clear();
+        self.snapshot_normal_textures.clear();
+        self.snapshot_info.clear();
 
         // Always join the worker before unload to avoid executing old code after DLL reload.
         if let Some(handle) = self.worker_handle.take() {
@@ -667,6 +853,7 @@ impl CesCelestialRust {
                     crate::compute_utils::on_render_thread_sync(|| {});
                     worker.texture_gen.dispose_local(&mut worker.rd);
                     worker.normal_texture_gen.dispose_local(&mut worker.rd);
+                    worker.snapshot_chain.dispose_local(&mut worker.rd);
                     worker.rd.free();
                 }
                 Err(_) => {
@@ -722,6 +909,7 @@ impl CesCelestialRust {
         }
 
         self.active_shader = None;
+        let mut snapshot_chain = CameraSnapshotTexture::new(0, 512, None, None);
         for layer_gd in non_null_elements(&self.texture_layers).into_iter() {
             if !layer_gd.bind().enabled {
                 continue;
@@ -742,6 +930,43 @@ impl CesCelestialRust {
                 tex.set_texture_rd_rid(gen.main_texture_rid());
                 self.cubemap_texture = Some(tex);
                 texture_gen = gen;
+                // LOD chain for CesTextureLayer (no normals)
+                let max_lod = layer_gd.get("max_snapshot_levels");
+                let max_snapshot_levels = if max_lod.is_nil() {
+                    0u32
+                } else {
+                    max_lod.to::<u32>()
+                };
+                if max_snapshot_levels > 0 {
+                    let color_shader_var = layer_gd.get("snapshot_color_shader");
+                    let color_shader = if color_shader_var.is_nil()
+                        || color_shader_var.to::<String>().is_empty()
+                    {
+                        None
+                    } else {
+                        Some(color_shader_var.to::<String>())
+                    };
+                    let mut chain = CameraSnapshotTexture::new(
+                        max_snapshot_levels,
+                        resolution,
+                        color_shader,
+                        None,
+                    );
+                    chain.allocate_textures(&mut rd);
+                    self.snapshot_textures.clear();
+                    self.snapshot_normal_textures.clear();
+                    for i in 0..chain.levels.len() {
+                        let mut tex2d = Texture2Drd::new_gd();
+                        tex2d.set_texture_rd_rid(chain.main_texture_rid(i));
+                        self.snapshot_textures.push(Some(tex2d));
+                    }
+                    snapshot_chain = chain;
+                    godot_print!(
+                        "[Snapshot] Allocated {} LOD patches (resolution={})",
+                        self.snapshot_textures.len(),
+                        resolution
+                    );
+                }
             }
             if script_class == StringName::from("CesTerrainTextureLayer") {
                 let resolution = layer_gd.get("resolution").to::<u32>();
@@ -771,6 +996,61 @@ impl CesCelestialRust {
                 } else {
                     self.normal_cubemap_texture = None;
                 }
+                // LOD chain for CesTerrainTextureLayer
+                let max_lod = layer_gd.get("max_snapshot_levels");
+                let max_snapshot_levels = if max_lod.is_nil() {
+                    0u32
+                } else {
+                    max_lod.to::<u32>()
+                };
+                if max_snapshot_levels > 0 {
+                    let color_shader_var = layer_gd.get("snapshot_color_shader");
+                    let color_shader = if color_shader_var.is_nil()
+                        || color_shader_var.to::<String>().is_empty()
+                    {
+                        None
+                    } else {
+                        Some(color_shader_var.to::<String>())
+                    };
+                    let normal_shader_var = layer_gd.get("snapshot_normal_shader");
+                    let normal_shader = if normal_shader_var.is_nil()
+                        || normal_shader_var.to::<String>().is_empty()
+                    {
+                        None
+                    } else if layer_gd.get("generate_normal_map").to::<bool>() {
+                        Some(normal_shader_var.to::<String>())
+                    } else {
+                        None
+                    };
+                    let mut chain = CameraSnapshotTexture::new(
+                        max_snapshot_levels,
+                        resolution,
+                        color_shader,
+                        normal_shader,
+                    );
+                    if let Some(ref tp) = terrain_params {
+                        chain.set_extra_params(bytemuck::bytes_of(tp).to_vec());
+                    }
+                    chain.allocate_textures(&mut rd);
+                    self.snapshot_textures.clear();
+                    self.snapshot_normal_textures.clear();
+                    for i in 0..chain.levels.len() {
+                        let mut tex2d = Texture2Drd::new_gd();
+                        tex2d.set_texture_rd_rid(chain.main_texture_rid(i));
+                        self.snapshot_textures.push(Some(tex2d));
+                        if chain.has_normal_textures() {
+                            let mut ntex2d = Texture2Drd::new_gd();
+                            ntex2d.set_texture_rd_rid(chain.normal_main_texture_rid(i));
+                            self.snapshot_normal_textures.push(Some(ntex2d));
+                        }
+                    }
+                    snapshot_chain = chain;
+                    godot_print!(
+                        "[Snapshot] Allocated {} LOD patches (resolution={})",
+                        self.snapshot_textures.len(),
+                        resolution
+                    );
+                }
             }
         }
 
@@ -780,6 +1060,7 @@ impl CesCelestialRust {
             texture_gen,
             normal_texture_gen,
             terrain_params,
+            snapshot_chain,
         );
         self.cubemap_resolution_active = self.find_cubemap_resolution();
         self.last_structure_id = layers_structure_id(&self.height_layers, &self.texture_layers);
@@ -812,22 +1093,54 @@ impl CesCelestialRust {
             generate_collision: self.generate_collision,
             show_debug_messages: self.show_debug_messages,
             seed: self.seed,
+            debug_snapshot_angle_offset: self.debug_snapshot_angle_offset,
+            show_snapshot_borders: read_show_snapshot_borders(
+                &self.texture_layers,
+                self.show_snapshot_borders,
+            ),
         }
     }
 
+    fn should_run_editor_preview(&self) -> bool {
+        if !Engine::singleton().is_editor_hint() {
+            return true;
+        }
+
+        let ei = godot::classes::EditorInterface::singleton();
+        let Some(edited_root) = ei.get_edited_scene_root() else {
+            return false;
+        };
+
+        let edited_root_id = edited_root.instance_id();
+        let mut current: Option<Gd<Node>> = Some(self.to_gd().upcast::<Node>());
+        while let Some(node) = current {
+            if node.instance_id() == edited_root_id {
+                return true;
+            }
+            current = node.get_parent();
+        }
+
+        false
+    }
+
     fn get_camera(&self) -> Option<Gd<Camera3D>> {
+        // In editor mode, prefer the editor viewport camera so the mesh
+        // subdivides around the editor camera, not the scene's Camera3D node.
+        if self.use_editor_camera && Engine::singleton().is_editor_hint() {
+            let ei = godot::classes::EditorInterface::singleton();
+            if let Some(vp) = ei.get_editor_viewport_3d() {
+                if let Some(camera) = vp.get_camera_3d() {
+                    return Some(camera);
+                }
+            }
+        }
+
         if let Some(ref cam) = self.gameplay_camera {
             return Some(cam.clone());
         }
 
         if let Some(parent) = self.base().get_parent() {
             if let Some(camera) = parent.try_get_node_as::<Camera3D>("Camera3D") {
-                return Some(camera);
-            }
-        }
-
-        if Engine::singleton().is_editor_hint() {
-            if let Some(camera) = self.base().get_viewport().and_then(|vp| vp.get_camera_3d()) {
                 return Some(camera);
             }
         }
@@ -840,7 +1153,28 @@ impl CesCelestialRust {
             return;
         }
 
-        let MeshResult { pos, triangles, uv } = result;
+        // Apply snapshot data if present
+        if result.snapshot_updated {
+            for (i, rid) in result.snapshot_main_rids.iter().enumerate() {
+                if i < self.snapshot_textures.len() {
+                    if let Some(ref mut tex) = self.snapshot_textures[i] {
+                        tex.set_texture_rd_rid(*rid);
+                    }
+                }
+            }
+            for (i, rid) in result.snapshot_normal_main_rids.iter().enumerate() {
+                if i < self.snapshot_normal_textures.len() {
+                    if let Some(ref mut tex) = self.snapshot_normal_textures[i] {
+                        tex.set_texture_rd_rid(*rid);
+                    }
+                }
+            }
+            self.snapshot_info = result.snapshot_level_info;
+        }
+
+        let MeshResult {
+            pos, triangles, uv, ..
+        } = result;
         let triangle_count = triangles.len() / 3;
 
         let packed_verts = PackedVector3Array::from(pos);
@@ -872,6 +1206,10 @@ impl CesCelestialRust {
             } else {
                 material.set_shader_parameter("use_normal_cubemap", &false.to_variant());
             }
+
+            // Apply LOD textures and metadata to the new material
+            self.apply_lod_shader_params(&mut material);
+
             new_mesh.surface_set_material(0, &material);
         }
 
@@ -889,6 +1227,43 @@ impl CesCelestialRust {
 
         if self.generate_collision {
             self.update_collision();
+        }
+    }
+
+    fn apply_lod_shader_params(&self, material: &mut Gd<ShaderMaterial>) {
+        let active_snapshot_count = self.snapshot_textures.len() as i32;
+        material.set_shader_parameter("snapshot_count", &active_snapshot_count.to_variant());
+        for (i, tex_opt) in self.snapshot_textures.iter().enumerate() {
+            if let Some(ref tex) = tex_opt {
+                let name = format!("snapshot{}_texture", i + 1);
+                material.set_shader_parameter(&name, &tex.to_variant());
+            }
+        }
+        for (i, tex_opt) in self.snapshot_normal_textures.iter().enumerate() {
+            if let Some(ref tex) = tex_opt {
+                let name = format!("snapshot{}_normal_texture", i + 1);
+                material.set_shader_parameter(&name, &tex.to_variant());
+            }
+        }
+        for (i, info) in self.snapshot_info.iter().enumerate() {
+            let (center_dir, tangent_u, tangent_v, angular_extent) = info;
+            let idx = i + 1;
+            material.set_shader_parameter(
+                &format!("snapshot{}_center_dir", idx),
+                &(*center_dir).to_variant(),
+            );
+            material.set_shader_parameter(
+                &format!("snapshot{}_tangent_u", idx),
+                &(*tangent_u).to_variant(),
+            );
+            material.set_shader_parameter(
+                &format!("snapshot{}_tangent_v", idx),
+                &(*tangent_v).to_variant(),
+            );
+            material.set_shader_parameter(
+                &format!("snapshot{}_angular_extent", idx),
+                &angular_extent.to_variant(),
+            );
         }
     }
 
@@ -915,6 +1290,7 @@ impl CesCelestialRust {
         texture_gen: CubemapTextureGen,
         normal_texture_gen: CubemapTextureGen,
         terrain_params: Option<TerrainParams>,
+        snapshot_chain: CameraSnapshotTexture,
     ) {
         let (work_tx, work_rx) = std::sync::mpsc::channel::<(Vector3, WorkerConfig)>();
         let (result_tx, result_rx) = std::sync::mpsc::channel::<MeshResult>();
@@ -931,9 +1307,12 @@ impl CesCelestialRust {
             texture_gen,
             normal_texture_gen,
             terrain_params,
+            snapshot_chain,
         };
 
         let handle = std::thread::spawn(move || {
+            let mut last_snapshot_show_borders = worker.snapshot_chain.show_borders;
+
             // Apply terrain params to height layers
             if let Some(ref tp) = worker.terrain_params {
                 for layer in worker.layers.iter_mut() {
@@ -975,6 +1354,11 @@ impl CesCelestialRust {
                 );
                 let norm_ms = t0.elapsed().as_secs_f64() * 1000.0;
                 godot_print!("AlgoTiming step TextureNormal: {:.3} ms", norm_ms);
+            }
+
+            // Initialize LOD chain pipeline if textures are allocated
+            if worker.snapshot_chain.has_textures() {
+                worker.snapshot_chain.init_pipeline(&mut worker.rd);
             }
 
             while let Ok((cam_local, config)) = work_rx.recv() {
@@ -1028,6 +1412,7 @@ impl CesCelestialRust {
                 }
 
                 // Process the latest ParamsChanged (if any)
+                let mut snapshot_force_regenerated = false;
                 if let Some((terrain_params, radius)) = last_params {
                     for layer in worker.layers.iter_mut() {
                         layer.set_terrain_params(&terrain_params);
@@ -1056,9 +1441,32 @@ impl CesCelestialRust {
                     godot_print!("AlgoTiming step TextureColor: {:.3} ms", tex_ms);
                     godot_print!("AlgoTiming step TextureNormal: {:.3} ms", norm_ms);
 
+                    // Update snapshot chain params and force-regenerate
+                    if worker.snapshot_chain.has_textures() {
+                        worker
+                            .snapshot_chain
+                            .set_extra_params(bytemuck::bytes_of(&terrain_params).to_vec());
+                        worker
+                            .snapshot_chain
+                            .force_regenerate(&mut worker.rd, config.radius);
+                        snapshot_force_regenerated = true;
+                    }
+
                     // Reset subdivision so heights are recomputed
                     worker.graph_generator = None;
                 }
+
+                if worker.snapshot_chain.has_textures()
+                    && config.show_snapshot_borders != last_snapshot_show_borders
+                {
+                    worker.snapshot_chain.show_borders = config.show_snapshot_borders;
+                    worker
+                        .snapshot_chain
+                        .force_regenerate(&mut worker.rd, config.radius);
+                    snapshot_force_regenerated = true;
+                    last_snapshot_show_borders = config.show_snapshot_borders;
+                }
+
                 let algo_config = RunAlgoConfig {
                     subdivisions: config.subdivisions,
                     radius: config.radius,
@@ -1086,14 +1494,83 @@ impl CesCelestialRust {
                         pos: vec![],
                         triangles: vec![],
                         uv: vec![],
+                        snapshot_main_rids: vec![],
+                        snapshot_normal_main_rids: vec![],
+                        snapshot_level_info: vec![],
+                        snapshot_updated: false,
                     });
                     continue;
                 }
+
+                // Generate camera snapshots after mesh algo (coupled to mesh update)
+                let snapshot_updated = if worker.snapshot_chain.has_textures() {
+                    // Apply show_borders setting
+                    worker.snapshot_chain.show_borders = config.show_snapshot_borders;
+                    // Apply debug offset: rotate the snapshot center direction
+                    let snapshot_cam = if config.debug_snapshot_angle_offset != 0.0 {
+                        let dir = cam_local.normalized();
+                        let up = if dir.y.abs() > 0.99 {
+                            Vector3::new(0.0, 0.0, 1.0)
+                        } else {
+                            Vector3::new(0.0, 1.0, 0.0)
+                        };
+                        let right = up.cross(dir).normalized();
+                        let angle = config.debug_snapshot_angle_offset;
+                        (dir * angle.cos() + right * angle.sin()).normalized() * cam_local.length()
+                    } else {
+                        cam_local
+                    };
+                    let updated =
+                        worker
+                            .snapshot_chain
+                            .update(&mut worker.rd, snapshot_cam, config.radius);
+                    updated || snapshot_force_regenerated
+                } else {
+                    false
+                };
+                let (snapshot_main_rids, snapshot_normal_main_rids, snapshot_level_info) =
+                    if snapshot_updated {
+                        if config.show_debug_messages {
+                            godot_print!(
+                                "[Snapshot] Updated {} patches",
+                                worker.snapshot_chain.levels.len()
+                            );
+                        }
+                        let rids = (
+                            worker
+                                .snapshot_chain
+                                .levels
+                                .iter()
+                                .map(|l| l.back_main_texture_rid)
+                                .collect(),
+                            worker
+                                .snapshot_chain
+                                .levels
+                                .iter()
+                                .map(|l| l.back_normal_main_texture_rid)
+                                .collect(),
+                            worker
+                                .snapshot_chain
+                                .levels
+                                .iter()
+                                .map(|l| (l.center_dir, l.tangent_u, l.tangent_v, l.angular_extent))
+                                .collect(),
+                        );
+                        // Swap front↔back so next generation writes to the old front
+                        worker.snapshot_chain.swap_buffers();
+                        rids
+                    } else {
+                        (vec![], vec![], vec![])
+                    };
 
                 let result = MeshResult {
                     pos: output.pos,
                     triangles: output.tris,
                     uv: output.uv,
+                    snapshot_main_rids,
+                    snapshot_normal_main_rids,
+                    snapshot_level_info,
+                    snapshot_updated,
                 };
 
                 if result_tx.send(result).is_err() {
@@ -1239,5 +1716,11 @@ mod tests {
     fn test_worker_state_is_send() {
         fn assert_send<T: Send>() {}
         assert_send::<super::WorkerState>();
+    }
+
+    #[test]
+    fn test_snapshot_chain_result_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::MeshResult>();
     }
 }
