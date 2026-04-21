@@ -18,3 +18,5 @@ CelestialSim.sln.DotSettings.user
 /docs/_site/
 .changes/
 site/
+
+.repowise/

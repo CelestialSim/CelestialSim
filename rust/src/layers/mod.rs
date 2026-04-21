@@ -1,6 +1,8 @@
+pub mod height_shader_terrain;
 pub mod sphere_terrain;
 
 use crate::state::CesState;
+use crate::texture_gen::TerrainParams;
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
 
@@ -24,4 +26,7 @@ pub trait CesLayer: Send {
     /// Dispose GPU resources directly so `Drop` won't touch an already-freed RD.
     /// Must be called before the owning RenderingDevice is freed.
     fn dispose_direct(&mut self, _rd: &mut Gd<RenderingDevice>) {}
+
+    /// Set runtime terrain params. Only meaningful for terrain height layers.
+    fn set_terrain_params(&mut self, _params: &TerrainParams) {}
 }

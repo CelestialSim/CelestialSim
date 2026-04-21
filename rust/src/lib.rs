@@ -4,6 +4,8 @@ use godot::prelude::*;
 mod algo;
 #[allow(dead_code)]
 mod buffer_info;
+#[allow(dead_code)]
+mod camera_snapshot_texture;
 mod celestial;
 mod compositor;
 #[allow(dead_code)]
@@ -13,10 +15,13 @@ mod cpu_subdivide;
 mod debug_dump;
 #[allow(dead_code)]
 mod initial_state;
+mod layer_resources;
 #[allow(dead_code)]
 mod layers;
 #[allow(dead_code)]
 mod state;
+#[allow(dead_code)]
+mod texture_gen;
 
 struct CelestialSimExtension;
 

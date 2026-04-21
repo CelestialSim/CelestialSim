@@ -1,0 +1,31 @@
+[gd_scene format=3 uid="uid://c4o0erbf0feqr"]
+
+[ext_resource type="Script" uid="uid://7sb8gr7iidvv" path="res://addons/celestial_sim/layers/ces_texture_layer.gd" id="1_texture"]
+[ext_resource type="Script" uid="uid://cix5hbo2s71by" path="res://scripts/lod_test_camera.gd" id="2_camera"]
+
+[sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_lod1"]
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_lod1"]
+script = ExtResource("1_texture")
+
+[node name="AdaptiveTextureLodTest" type="Node3D" unique_id=1862022123]
+
+[node name="Planet" type="CesCelestialRust" parent="." unique_id=1685106051]
+use_editor_camera = false
+radius = 1.51
+triangle_screen_size = 0.0
+show_debug_messages = true
+height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_lod1")])
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_lod1")])
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1859829288]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.8651325, 0, 2.9207237)
+script = ExtResource("2_camera")
+target = NodePath("../Planet")
+orbit_speed = 0.5
+zoom_speed = 3.0
+min_distance = 1.6
+log_interval = 2.0
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=861629472]
+transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)
