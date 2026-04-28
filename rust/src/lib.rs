@@ -1,5 +1,7 @@
 use godot::prelude::*;
 
+pub mod blue_noise;
+
 #[allow(dead_code)]
 mod algo;
 #[allow(dead_code)]

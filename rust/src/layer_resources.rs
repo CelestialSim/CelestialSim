@@ -29,3 +29,16 @@ pub struct CesTextureLayerResource {
     #[init(val = true)]
     pub enabled: bool,
 }
+
+/// Base resource for scatter layers (GPU object instancing — grass, trees, …).
+/// GDScript subclasses (CesScatterLayer) expose per-kind parameters
+/// (mesh, density, biome filter) and provide the typed "+" dropdown.
+#[derive(GodotClass)]
+#[class(tool, init, base = Resource)]
+pub struct CesScatterLayerResource {
+    base: Base<Resource>,
+
+    #[export]
+    #[init(val = true)]
+    pub enabled: bool,
+}

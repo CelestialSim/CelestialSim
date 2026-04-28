@@ -1,0 +1,39 @@
+[gd_scene format=3 uid="uid://btestscatter1"]
+
+[ext_resource type="Script" uid="uid://bqhdb85j7xu2k" path="res://addons/celestial_sim/layers/ces_terrain_texture_layer.gd" id="1_terrain"]
+[ext_resource type="Script" path="res://addons/celestial_sim/layers/ces_scatter_mask_texture_layer.gd" id="2_mask"]
+
+[sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_h1"]
+shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_t1"]
+script = ExtResource("1_terrain")
+resolution = 200
+max_snapshot_levels = 4
+show_snapshot_borders = false
+height_tiles = 6.223
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_mask"]
+script = ExtResource("2_mask")
+noise_strength = 1.0
+target_color = Color(0.2, 0.6, 0.2, 1.0)
+color_tolerance = 0.3
+
+[node name="ScatterMaskTest" type="Node3D"]
+
+[node name="Planet" type="CesCelestialRust" parent="."]
+radius = 60.0
+subdivisions = 8
+triangle_screen_size = 0.001
+low_poly_look = false
+show_debug_messages = true
+height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_h1")])
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1"), SubResource("CesTextureLayerResource_mask")])
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 150)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)
+light_energy = 1.5
+shadow_enabled = true

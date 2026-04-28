@@ -194,7 +194,8 @@ impl CesRunAlgo {
             let n_to_merge;
             if !skip_auto_division_marking {
                 let mark_start = Instant::now();
-                let mark_counts = self.mark_tris_shader
+                let mark_counts = self
+                    .mark_tris_shader
                     .as_ref()
                     .unwrap()
                     .flag_large_tris_to_divide(
@@ -219,11 +220,12 @@ impl CesRunAlgo {
             }
 
             let divide_start = Instant::now();
-            n_tris_added =
-                self.div_shader
-                    .as_ref()
-                    .unwrap()
-                    .make_div(rd, state, config.precise_normals, n_to_divide);
+            n_tris_added = self.div_shader.as_ref().unwrap().make_div(
+                rd,
+                state,
+                config.precise_normals,
+                n_to_divide,
+            );
             timings.divide += divide_start.elapsed();
             if n_tris_added > 0 {
                 state.sync_n_tris_buffer(rd);
@@ -234,7 +236,11 @@ impl CesRunAlgo {
             }
 
             let merge_start = Instant::now();
-            n_tris_merged = self.merge_shader.as_ref().unwrap().make_merge(rd, state, n_to_merge);
+            n_tris_merged = self
+                .merge_shader
+                .as_ref()
+                .unwrap()
+                .make_merge(rd, state, n_to_merge);
             timings.merge += merge_start.elapsed();
             if n_tris_merged > 0 && config.show_debug_messages {
                 godot_print!(

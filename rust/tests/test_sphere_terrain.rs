@@ -204,5 +204,8 @@ async fn run_sphere_terrain_test() {
         }
     }
 
-    eprintln!("SphereTerrain test passed: all {} vertices normalized to radius {}", n_verts, radius);
+    eprintln!(
+        "SphereTerrain test passed: all {} vertices normalized to radius {}",
+        n_verts, radius
+    );
 }

@@ -52,7 +52,7 @@ impl Default for TerrainParams {
 }
 
 /// Creates a uniform buffer directly on the given RD (for use inside render-thread callbacks).
-fn create_uniform_buffer_raw(rd: &mut Gd<RenderingDevice>, data: &[u8]) -> Rid {
+pub(crate) fn create_uniform_buffer_raw(rd: &mut Gd<RenderingDevice>, data: &[u8]) -> Rid {
     let padded_size = 16.max((data.len() + 15) / 16 * 16);
     let mut padded = vec![0u8; padded_size];
     padded[..data.len()].copy_from_slice(data);

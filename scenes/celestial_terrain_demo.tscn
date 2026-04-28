@@ -1,30 +1,82 @@
 [gd_scene format=3 uid="uid://cni0otv6m1f5y"]
 
 [ext_resource type="Script" uid="uid://bqhdb85j7xu2k" path="res://addons/celestial_sim/layers/ces_terrain_texture_layer.gd" id="1_terrain"]
+[ext_resource type="Script" uid="uid://bbi6d86utyeoh" path="res://addons/celestial_sim/layers/ces_scatter_mask_texture_layer.gd" id="2_wnqpw"]
+[ext_resource type="Script" uid="uid://bv4fa87d46ljf" path="res://addons/celestial_sim/layers/ces_scatter_layer.gd" id="2_wpes0"]
+[ext_resource type="Script" uid="uid://cwosrvp03o7qk" path="res://addons/celestial_sim/layers/ces_show_level_texture_layer.gd" id="3_jleck"]
 
 [sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_h1"]
 shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
 
 [sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_t1"]
 script = ExtResource("1_terrain")
-resolution = 200
+resolution = 1000
 max_snapshot_levels = 4
-height_tiles = 11.207
+height_tiles = 6.223
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_jleck"]
+enabled = false
+script = ExtResource("2_wnqpw")
+noise_strength = 0.506
+target_color = Color(0.67058825, 0.80784315, 0.5921569, 1)
+metadata/_custom_type_script = "uid://bbi6d86utyeoh"
+
+[sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_7xawd"]
+enabled = false
+script = ExtResource("3_jleck")
+metadata/_custom_type_script = "uid://cwosrvp03o7qk"
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_wpes0"]
+albedo_color = Color(0.20784314, 0.5764706, 0.30980393, 1)
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_wnqpw"]
+height = 4.094
+radial_segments = 4
+rings = 2
+
+[sub_resource type="CesScatterLayerResource" id="CesScatterLayerResource_7xawd"]
+script = ExtResource("2_wpes0")
+mesh = SubResource("CapsuleMesh_wnqpw")
+material = SubResource("StandardMaterial3D_wpes0")
+subdivision_level = 6
+noise_strength = 0.002
+seed = 6
+height_min = 0.509
+height_max = 0.447
+albedo_target = Color(0.5686275, 0.7372549, 0.49411765, 1)
+albedo_tolerance = 0.579
+metadata/_custom_type_script = "uid://bv4fa87d46ljf"
+
+[sub_resource type="BoxMesh" id="BoxMesh_wpes0"]
+size = Vector3(0.085, 1.006, 0.072)
+
+[sub_resource type="CesScatterLayerResource" id="CesScatterLayerResource_wnqpw"]
+script = ExtResource("2_wpes0")
+mesh = SubResource("BoxMesh_wpes0")
+material = SubResource("StandardMaterial3D_wpes0")
+subdivision_level = 9
+noise_strength = 0.0
+seed = 8
+height_min = 0.396
+height_max = 0.447
+albedo_target = Color(0.33967912, 0.8931226, 0.30769715, 1)
+albedo_tolerance = 0.473
+metadata/_custom_type_script = "uid://bv4fa87d46ljf"
 
 [node name="TerrainDemo" type="Node3D" unique_id=946981429]
 
 [node name="Planet" type="CesCelestialRust" parent="." unique_id=494222983]
-radius = 6.0
-subdivisions = 8
+radius = 300.0
+subdivisions = 10
 triangle_screen_size = 0.001
 low_poly_look = false
-show_debug_messages = true
 height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_h1")])
-texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1")])
+texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1"), SubResource("CesTextureLayerResource_jleck"), SubResource("CesTextureLayerResource_7xawd")])
+scatter_layers = Array[CesScatterLayerResource]([SubResource("CesScatterLayerResource_7xawd"), SubResource("CesScatterLayerResource_wnqpw")])
 transform = Transform3D(0.9775558, 0, -0.21067649, 0, 1, 0, 0.21067649, 0, 0.9775558, 0, 0, 0)
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=1889152311]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.8815696, 0, 9.887062)
+transform = Transform3D(-0.9537302, -0.25438628, 0.16027015, 0.042183593, 0.41456774, 0.9090402, -0.29769015, 0.8737401, -0.38465476, -40.95815, 174.7145, 238.31006)
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=433354937]
 transform = Transform3D(0.866, -0.25, 0.433, 0, 0.866, 0.5, -0.5, -0.433, 0.75, 0, 5, 0)

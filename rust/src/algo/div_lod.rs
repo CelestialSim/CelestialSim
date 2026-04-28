@@ -7,8 +7,7 @@ use crate::compute_utils::ComputePipeline;
 use crate::state::{CesState, Triangle};
 
 const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/DivideLOD.slang";
-const DIV_PREFIX_SHADER_PATH: &str =
-    "res://addons/celestial_sim/shaders/ComputeDivPrefixSum.slang";
+const DIV_PREFIX_SHADER_PATH: &str = "res://addons/celestial_sim/shaders/ComputeDivPrefixSum.slang";
 
 pub struct DivShader {
     pipeline: ComputePipeline,
@@ -215,14 +214,16 @@ impl DivShader {
         }
 
         // Compute exclusive prefix sum on t_to_div mask (GPU)
-        let div_prefix_buf =
-            compute_utils::create_empty_storage_buffer(rd, state.n_tris * std::mem::size_of::<i32>() as u32);
+        let div_prefix_buf = compute_utils::create_empty_storage_buffer(
+            rd,
+            state.n_tris * std::mem::size_of::<i32>() as u32,
+        );
         self.div_prefix_pipeline.dispatch(
             rd,
             &[
                 &state.t_to_divide_mask, // 0: t_to_div
-                &div_prefix_buf,          // 1: div_prefix (output)
-                &state.u_n_tris,          // 2: n_tris
+                &div_prefix_buf,         // 1: div_prefix (output)
+                &state.u_n_tris,         // 2: n_tris
             ],
             1,
         );
