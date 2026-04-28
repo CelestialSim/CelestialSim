@@ -12,6 +12,9 @@ godot = { git = "https://github.com/godot-rust/gdext", branch = "master", featur
     "experimental-godot-api",
 ] }
 bytemuck = { version = "1", features = ["derive"] }
+rustfft = "6"
+rand = "0.9"
+rand_pcg = "0.9"
 
 [dev-dependencies]
 wgpu = "24"

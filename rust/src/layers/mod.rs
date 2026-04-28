@@ -1,4 +1,5 @@
 pub mod height_shader_terrain;
+pub mod scatter;
 pub mod sphere_terrain;
 
 use crate::state::CesState;

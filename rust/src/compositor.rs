@@ -14,8 +14,7 @@ use godot::prelude::*;
 use crate::initial_state;
 use crate::state::CesState;
 
-const DRAW_SHADER_PATH: &str =
-    "res://addons/celestial_sim/shaders/ces_final_state_compositor.glsl";
+const DRAW_SHADER_PATH: &str = "res://addons/celestial_sim/shaders/ces_final_state_compositor.glsl";
 
 /// Compositor effect that renders CesState geometry in scene space.
 #[derive(GodotClass)]
@@ -111,9 +110,16 @@ impl ICompositorEffect for CesFinalStateCompositorRust {
             godot_print!("[CompositorRust] render_callback: initializing...");
             self.construct();
             if self.rd.is_some() && self.draw_shader.is_valid() {
-                godot_print!("[CompositorRust] construct() succeeded, shader valid, vtx_count={}", self.structured_vertex_count);
+                godot_print!(
+                    "[CompositorRust] construct() succeeded, shader valid, vtx_count={}",
+                    self.structured_vertex_count
+                );
             } else {
-                godot_print!("[CompositorRust] construct() FAILED: rd={} shader_valid={}", self.rd.is_some(), self.draw_shader.is_valid());
+                godot_print!(
+                    "[CompositorRust] construct() FAILED: rd={} shader_valid={}",
+                    self.rd.is_some(),
+                    self.draw_shader.is_valid()
+                );
             }
         }
         if self.rd.is_none() || !self.draw_shader.is_valid() {
