@@ -1,7 +1,7 @@
 # CelestialSim Overview
 
-> [!WARNING]
-> **Draft documentation:** this documentation is still in progress and missing key pages/sections.
+!!! warning "Draft documentation"
+    This documentation is still in progress and missing key pages/sections.
 
 CelestialSim is a Godot plugin that renders adaptive level-of-detail (LOD) terrain on top of an icosphere base mesh. By dynamically subdividing triangles near the camera while keeping distant regions coarse, it delivers Earth-scale planets without exhausting GPU budget.
 

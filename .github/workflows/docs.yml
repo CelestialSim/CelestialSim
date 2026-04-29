@@ -1,13 +1,19 @@
 name: Documentation
+
 on:
   push:
     branches:
       - main
   workflow_dispatch:
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
+env:
+  ZENSICAL_VERSION: "0.0.37"
+
 jobs:
   deploy:
     environment:
@@ -15,177 +21,54 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/configure-pages@v5
       - uses: actions/checkout@v5
+
+      - uses: actions/configure-pages@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build Zensical site
+        run: uvx zensical@${ZENSICAL_VERSION} build --clean
+
       - uses: dtolnay/rust-toolchain@stable
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - run: cargo doc --manifest-path rust/Cargo.toml --no-deps
-      - name: Stage Pages site
-        env:
-          REPO_BLOB_URL: ${{ github.server_url }}/${{ github.repository }}/blob/${{ github.ref_name }}
+
+      - name: Build Rust API docs
+        run: cargo doc --manifest-path rust/Cargo.toml --no-deps
+
+      - name: Merge Rust API docs into site
         run: |
-          mkdir -p site
-          cp -R rust/target/doc/. site/
+          set -euo pipefail
+          mkdir -p site/api
+          cp -R rust/target/doc/. site/api/
           touch site/.nojekyll
-          cat > site/index.html <<EOF
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>CelestialSim Documentation</title>
-            <style>
-              :root {
-                color-scheme: light;
-                --bg: #f4f1e8;
-                --panel: #fffaf0;
-                --ink: #1f2933;
-                --muted: #52606d;
-                --accent: #0b6e4f;
-                --accent-2: #d97706;
-                --border: rgba(31, 41, 51, 0.12);
-              }
 
-              * {
-                box-sizing: border-box;
-              }
+      - name: Verify built site
+        run: |
+          set -euo pipefail
+          REQUIRED=(
+            "site/index.html"
+            "site/install/index.html"
+            "site/api/celestial_sim/index.html"
+          )
+          STATUS=0
+          for path in "${REQUIRED[@]}"; do
+            if [ -e "$path" ]; then
+              echo "OK $path"
+            else
+              echo "MISSING $path"
+              STATUS=1
+            fi
+          done
+          exit $STATUS
 
-              body {
-                margin: 0;
-                min-height: 100vh;
-                font-family: Georgia, "Times New Roman", serif;
-                color: var(--ink);
-                background:
-                  radial-gradient(circle at top left, rgba(217, 119, 6, 0.16), transparent 28%),
-                  radial-gradient(circle at bottom right, rgba(11, 110, 79, 0.18), transparent 32%),
-                  linear-gradient(180deg, #f8f4ea 0%, var(--bg) 100%);
-              }
-
-              main {
-                width: min(960px, calc(100% - 2rem));
-                margin: 0 auto;
-                padding: 4rem 0 5rem;
-              }
-
-              .hero {
-                padding: 2rem 0 1.5rem;
-              }
-
-              .eyebrow {
-                margin: 0 0 0.75rem;
-                font-size: 0.78rem;
-                letter-spacing: 0.18em;
-                text-transform: uppercase;
-                color: var(--accent);
-              }
-
-              h1 {
-                margin: 0;
-                max-width: 12ch;
-                font-size: clamp(2.8rem, 6vw, 5.4rem);
-                line-height: 0.95;
-                font-weight: 700;
-              }
-
-              .hero p {
-                max-width: 56ch;
-                margin: 1.25rem 0 0;
-                font-size: 1.08rem;
-                line-height: 1.7;
-                color: var(--muted);
-              }
-
-              .grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-                gap: 1rem;
-                margin-top: 2rem;
-              }
-
-              .card {
-                display: block;
-                padding: 1.25rem;
-                border: 1px solid var(--border);
-                border-radius: 18px;
-                background: color-mix(in srgb, var(--panel) 88%, white 12%);
-                color: inherit;
-                text-decoration: none;
-                box-shadow: 0 18px 50px rgba(31, 41, 51, 0.08);
-              }
-
-              .card strong {
-                display: block;
-                margin-bottom: 0.45rem;
-                font-size: 1.05rem;
-              }
-
-              .card span {
-                color: var(--muted);
-                line-height: 1.55;
-              }
-
-              .card.api {
-                border-color: rgba(11, 110, 79, 0.22);
-              }
-
-              .card.guides {
-                border-color: rgba(217, 119, 6, 0.22);
-              }
-
-              .meta {
-                margin-top: 2rem;
-                font-size: 0.95rem;
-                color: var(--muted);
-              }
-
-              code {
-                font-family: "Fira Code", "JetBrains Mono", monospace;
-                font-size: 0.92em;
-              }
-            </style>
-          </head>
-          <body>
-            <main>
-              <section class="hero">
-                <p class="eyebrow">CelestialSim Docs</p>
-                <h1>Rust API and project guides</h1>
-                <p>
-                  The published API reference is generated from <code>cargo doc</code> for the
-                  Rust extension crate. The handwritten guides remain in the repository and are
-                  linked here for project-level setup and architecture notes.
-                </p>
-              </section>
-
-              <section class="grid">
-                <a class="card api" href="./celestial_sim/">
-                  <strong>Rust API reference</strong>
-                  <span>Browse the generated rustdoc for <code>celestial_sim</code>.</span>
-                </a>
-                <a class="card guides" href="${REPO_BLOB_URL}/docs/introduction.md">
-                  <strong>Introduction guide</strong>
-                  <span>Project overview, rendering pipeline, and system context.</span>
-                </a>
-                <a class="card guides" href="${REPO_BLOB_URL}/docs/getting-started.md">
-                  <strong>Getting started</strong>
-                  <span>Local build steps, development prerequisites, and docs workflow.</span>
-                </a>
-                <a class="card guides" href="${REPO_BLOB_URL}/README.md">
-                  <strong>Repository README</strong>
-                  <span>Installation notes, development workflow, and top-level project details.</span>
-                </a>
-              </section>
-
-              <p class="meta">
-                CI publishes this site from <code>cargo doc --manifest-path rust/Cargo.toml --no-deps</code>.
-              </p>
-            </main>
-          </body>
-          </html>
-          EOF
       - uses: actions/upload-pages-artifact@v4
         with:
           path: site
+
       - uses: actions/deploy-pages@v4
         id: deployment
