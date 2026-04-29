@@ -8,28 +8,21 @@
 
 # Installation
 
-1. Download the latest release zip from the [Releases page](https://github.com/CelestialSim/CelestialSim/releases)
-2. Extract the zip file
-3. Copy the `celestial_sim` folder to your project's `addons` folder
+1. Download the latest `celestial_sim-<version>.zip` from the [Releases page](https://github.com/CelestialSim/CelestialSim/releases).
+2. Extract the zip — it contains an `addons/` directory with both `celestial_sim/` and `shader-slang/`.
+3. Copy both `addons/celestial_sim/` and `addons/shader-slang/` into your Godot project's `addons/` folder.
+4. Open the project in Godot — both plugins will be picked up automatically (the GDExtension is loaded by `addons/celestial_sim/celestial_sim_rust.gdextension`).
+
+The release zip ships prebuilt binaries for Linux x86_64, Windows x86_64, and macOS (universal: x86_64 + arm64). The bundled `shader-slang` is the [DevPrice/godot-slang](https://github.com/DevPrice/godot-slang) plugin pinned to a known-good version — you do **not** need to install it separately from the Asset Library.
 
 ## Development
 
-To compile Slang shaders for development across multiple platforms (Windows, macOS, Linux), use the Slang Godot plugin available at https://github.com/DevPrice/godot-slang. Install it from the Godot Asset Library.
-
-# Troubleshooting
-The plugin is not working, what should I do ?
-- Open the celestial scene and check that the scene image is the one of a planet.
-- If this is not the case enable the plugin inside Project/Project Settings/Plugins
-- Reopen Godot
+If you are working from a source checkout, the `shader-slang` plugin is already vendored under `addons/shader-slang/`.
 
 # Advance features
 ### Converting Slang Shaders to c code
 
-```
-dotnet build
-```
-
-Use 
+Use
 ```
 slangc filename.slang -o filename_out.cpp
 ```
@@ -38,8 +31,6 @@ Compile the output C++ file to a shared library using
 ```
 g++ -shared -fPIC -O2 Tests/MultiplyTest_out.cpp -o Tests/libMultiplyTest.so
 ```
-
-Then the library can be loaded in C#.
 
 To run tests use
 godot Tests/scene_name.tscn --quit-after 3
