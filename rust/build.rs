@@ -186,10 +186,14 @@ fn which_slangc() -> Option<String> {
         return Some(path);
     }
 
-    // Try to find on PATH
-    let output = Command::new("which").arg("slangc").output().ok()?;
+    // Try to find on PATH. Use `where` on Windows (returns native Windows paths)
+    // and `which` elsewhere. Avoid Git Bash's `which`, which returns MSYS-style
+    // paths like `/d/a/...` that Rust's Command cannot launch on Windows.
+    let lookup = if cfg!(windows) { "where" } else { "which" };
+    let output = Command::new(lookup).arg("slangc").output().ok()?;
     if output.status.success() {
-        let path = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        let stdout = String::from_utf8(output.stdout).ok()?;
+        let path = stdout.lines().next()?.trim().to_string();
         if !path.is_empty() {
             return Some(path);
         }
