@@ -13,39 +13,287 @@ on:
         type: string
         default: ''
 
+env:
+  GODOT_SLANG_VERSION: v3.4.0
+  SLANG_VERSION: v2026.5.2
+  SLANG_VERSION_BARE: 2026.5.2
+
 jobs:
-  create-release:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
+  build:
+    name: Build cdylib (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            libname: libcelestial_sim.so
+            bin_subdir: linux/release
+            slang_os: linux-x86_64
+            os_short: linux
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            libname: celestial_sim.dll
+            bin_subdir: windows/release
+            slang_os: windows-x86_64
+            os_short: windows
+          - runner: macos-latest
+            libname: libcelestial_sim.dylib
+            bin_subdir: macos/release
+            slang_os: macos-aarch64
+            os_short: macos
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
-      - name: Create release directory
+
+      - name: Install slangc (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          SLANG_OS: ${{ matrix.slang_os }}
         run: |
-          mkdir -p release-temp/celestial_sim
-      
-      - name: Copy addons folder content
+          set -euo pipefail
+          SLANG_DIR="$RUNNER_TEMP/slang"
+          mkdir -p "$SLANG_DIR"
+          ASSET="slang-${SLANG_VERSION_BARE}-${SLANG_OS}.tar.gz"
+          URL="https://github.com/shader-slang/slang/releases/download/${SLANG_VERSION}/${ASSET}"
+          echo "Downloading $URL"
+          curl -L --fail -o "$SLANG_DIR/$ASSET" "$URL"
+          tar -xzf "$SLANG_DIR/$ASSET" -C "$SLANG_DIR"
+          if [ ! -x "$SLANG_DIR/bin/slangc" ]; then
+            echo "slangc not found at expected location $SLANG_DIR/bin/slangc"
+            ls -la "$SLANG_DIR" || true
+            ls -la "$SLANG_DIR/bin" || true
+            exit 1
+          fi
+          echo "$SLANG_DIR/bin" >> "$GITHUB_PATH"
+          # Some macOS releases ship .dylib loaders next to slangc; ensure runtime can find them
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "DYLD_LIBRARY_PATH=$SLANG_DIR/lib" >> "$GITHUB_ENV"
+          else
+            echo "LD_LIBRARY_PATH=$SLANG_DIR/lib" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install slangc (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          SLANG_OS: ${{ matrix.slang_os }}
         run: |
-          cp -r addons/celestial_sim/* release-temp/celestial_sim/
-      
-      - name: Remove .slang files
+          $ErrorActionPreference = 'Stop'
+          $slangDir = Join-Path $env:RUNNER_TEMP 'slang'
+          New-Item -ItemType Directory -Force -Path $slangDir | Out-Null
+          $asset = "slang-$env:SLANG_VERSION_BARE-$env:SLANG_OS.zip"
+          $url = "https://github.com/shader-slang/slang/releases/download/$env:SLANG_VERSION/$asset"
+          Write-Host "Downloading $url"
+          $zipPath = Join-Path $slangDir 'slang.zip'
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $slangDir -Force
+          $slangcExe = Join-Path $slangDir 'bin\slangc.exe'
+          if (-not (Test-Path $slangcExe)) {
+            Write-Host "slangc.exe not found at expected location $slangcExe"
+            Get-ChildItem -Path $slangDir -Recurse | Select-Object -First 50 | Format-Table FullName
+            exit 1
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $slangDir 'bin')
+
+      - name: Verify slangc on PATH
+        shell: bash
         run: |
-          find release-temp -name "*.slang" -type f -delete
-      
-      - name: Remove .slang.import files
+          set -euo pipefail
+          command -v slangc
+          slangc -v
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust targets (non-macOS)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Add Rust targets (macOS universal)
+        if: runner.os == 'macOS'
+        shell: bash
         run: |
-          find release-temp -name "*.slang.import" -type f -delete
-      
-      - name: Create zip file
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Build cdylib (Linux/Windows)
+        if: runner.os != 'macOS'
+        shell: bash
         run: |
-          cd release-temp
-          zip -r ../celestial_sim-${{ inputs.version }}.zip celestial_sim
-          cd ..
-      
-      - name: Create Release
+          set -euo pipefail
+          cargo build --locked --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }} 2>&1 | tee build.log
+          if grep -F "slangc not found" build.log; then
+            echo "ERROR: build.rs reported slangc was not found on PATH during cargo build."
+            exit 1
+          fi
+
+      - name: Verify SPIR-V outputs (Linux/Windows)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          count=$(find "rust/target/${{ matrix.target }}/release/build" -name '*.spv' -print 2>/dev/null | wc -l)
+          echo "Found $count .spv files under rust/target/${{ matrix.target }}/release/build"
+          if [ "$count" -le 0 ]; then
+            echo "ERROR: no compiled SPIR-V shaders found; slangc compilation likely failed."
+            find "rust/target/${{ matrix.target }}/release/build" -maxdepth 4 -type d -print 2>/dev/null || true
+            exit 1
+          fi
+
+      - name: Build cdylib (macOS x86_64 + aarch64)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --manifest-path rust/Cargo.toml --target x86_64-apple-darwin 2>&1 | tee build-x86_64.log
+          if grep -F "slangc not found" build-x86_64.log; then
+            echo "ERROR: build.rs reported slangc was not found on PATH during x86_64 cargo build."
+            exit 1
+          fi
+          cargo build --locked --release --manifest-path rust/Cargo.toml --target aarch64-apple-darwin 2>&1 | tee build-aarch64.log
+          if grep -F "slangc not found" build-aarch64.log; then
+            echo "ERROR: build.rs reported slangc was not found on PATH during aarch64 cargo build."
+            exit 1
+          fi
+
+      - name: Verify SPIR-V outputs (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for tgt in x86_64-apple-darwin aarch64-apple-darwin; do
+            count=$(find "rust/target/$tgt/release/build" -name '*.spv' -print 2>/dev/null | wc -l)
+            echo "Found $count .spv files under rust/target/$tgt/release/build"
+            if [ "$count" -le 0 ]; then
+              echo "ERROR: no compiled SPIR-V shaders found for $tgt; slangc compilation likely failed."
+              find "rust/target/$tgt/release/build" -maxdepth 4 -type d -print 2>/dev/null || true
+              exit 1
+            fi
+          done
+
+      - name: Lipo macOS universal binary
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p universal-out
+          lipo -create \
+            -output universal-out/${{ matrix.libname }} \
+            rust/target/x86_64-apple-darwin/release/${{ matrix.libname }} \
+            rust/target/aarch64-apple-darwin/release/${{ matrix.libname }}
+          INFO="$(lipo -info universal-out/${{ matrix.libname }})"
+          echo "$INFO"
+          echo "$INFO" | grep -q "x86_64" || { echo "Missing x86_64 slice"; exit 1; }
+          echo "$INFO" | grep -q "arm64" || { echo "Missing arm64 slice"; exit 1; }
+
+      - name: Stage cdylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="staging/addons/celestial_sim/bin/${{ matrix.bin_subdir }}"
+          mkdir -p "$STAGE"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp "universal-out/${{ matrix.libname }}" "$STAGE/${{ matrix.libname }}"
+          else
+            cp "rust/target/${{ matrix.target }}/release/${{ matrix.libname }}" "$STAGE/${{ matrix.libname }}"
+          fi
+          ls -la "$STAGE"
+
+      - name: Upload cdylib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdylib-${{ matrix.os_short }}
+          path: staging/
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    name: Package and release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download cdylib artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+          pattern: cdylib-*
+          merge-multiple: true
+
+      - name: Show staging tree (post-download)
+        shell: bash
+        run: |
+          set -euo pipefail
+          find staging -maxdepth 6 -print | sort
+
+      - name: Copy plugin sources into staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST="staging/addons/celestial_sim"
+          mkdir -p "$DEST"
+          cp -r addons/celestial_sim/shaders "$DEST/"
+          cp -r addons/celestial_sim/layers "$DEST/"
+          cp addons/celestial_sim/celestial_sim_rust.gdextension "$DEST/"
+          if [ -f addons/celestial_sim/celestial_sim_rust.gdextension.uid ]; then
+            cp addons/celestial_sim/celestial_sim_rust.gdextension.uid "$DEST/"
+          fi
+
+      - name: Download godot-slang
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://github.com/DevPrice/godot-slang/releases/download/${{ env.GODOT_SLANG_VERSION }}/godot-slang.zip"
+          echo "Downloading $URL"
+          curl -L --fail -o godot-slang.zip "$URL"
+          unzip -q godot-slang.zip -d staging/
+
+      - name: Verify required paths exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          REQUIRED=(
+            "staging/addons/celestial_sim/bin/linux/release/libcelestial_sim.so"
+            "staging/addons/celestial_sim/bin/windows/release/celestial_sim.dll"
+            "staging/addons/celestial_sim/bin/macos/release/libcelestial_sim.dylib"
+            "staging/addons/celestial_sim/celestial_sim_rust.gdextension"
+            "staging/addons/shader-slang/shader-slang.gdextension"
+          )
+          STATUS=0
+          for path in "${REQUIRED[@]}"; do
+            if [ -e "$path" ]; then
+              echo "OK $path"
+            else
+              echo "MISSING $path"
+              STATUS=1
+            fi
+          done
+          exit $STATUS
+
+      - name: Create zip
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          cd staging
+          zip -r "../celestial_sim-${VERSION}.zip" addons
+
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ inputs.version }}
