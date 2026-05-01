@@ -10,7 +10,8 @@ CelestialSim.sln.DotSettings.user
 /addons/shader-slang/
 /addons/celestial_sim/bin/
 /rust/target/
-/.cache/
+/.cache/*
+!/.cache/blue_noise_32x32x32_seed0xce1e54.bin
 
 # docfx output -- this will be built manually
 /docs/.mkdocs_mdx_cache/
