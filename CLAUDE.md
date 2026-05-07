@@ -6,8 +6,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CelestialSim is a Godot 4.6 plugin that renders planetary bodies with adaptive-LOD terrain. The active implementation is a Rust **GDExtension** (`rust/`) using `godot-rust/gdext`, paired with **Slang** compute shaders living under `addons/celestial_sim/shaders/`. The compiled extension is loaded by `addons/celestial_sim/celestial_sim_rust.gdextension`.
 
-A few legacy C# scripts (`scripts/Movement.cs`, `scripts/OrbitBenchmark.cs`, debug capture scenes under `debug/`) still exist, but there is no `.csproj`/`.sln` in this repo — `dotnet build` does not apply here. Ignore the `dotnet build` instruction in `AGENTS.md`; use `cargo build` from `rust/` instead.
-
 ## Build and run
 
 ```bash

@@ -1,14 +1,12 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use godot::builtin::Vector3;
-use godot::classes::rendering_device::{
-    DataFormat, DriverResource, TextureSamples, TextureType, TextureUsageBits,
-};
-use godot::classes::{RdTextureFormat, RdTextureView, RenderingDevice, RenderingServer};
-use godot::obj::{Gd, NewGd, Singleton};
+use godot::classes::{RenderingDevice, RenderingServer};
+use godot::obj::{Gd, Singleton};
 use godot::prelude::Rid;
 
 use crate::compute_utils::{on_render_thread_sync, ComputePipeline, RdSend};
+use crate::shared_texture::{create_shared_2d_texture_rids, shared_texture_2d_usage_bits};
 
 pub const DEFAULT_SNAPSHOT_COLOR_SHADER: &str =
     "res://addons/celestial_sim/shaders/SnapshotPatchNoise.slang";
@@ -18,8 +16,8 @@ pub const DEFAULT_SNAPSHOT_NORMAL_SHADER: &str =
 /// Maximum supported LOD levels (LOD0 cubemap + LOD1..LOD_MAX detail patches).
 pub const MAX_LOD_LEVELS: usize = 4;
 
-/// Minimum time interval between snapshot regenerations.
-const UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+/// Default minimum time interval between snapshot regenerations.
+const DEFAULT_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
 
 // ───────────────────────────────────────────────────────────────────
 // Tangent-plane utilities
@@ -140,6 +138,8 @@ pub struct CameraSnapshotTexture {
     last_camera_dir: Option<Vector3>,
     /// Timestamp of the last snapshot regeneration.
     last_update_time: Option<Instant>,
+    /// Minimum interval between snapshot regenerations.
+    minimum_update_interval: Duration,
 }
 
 impl CameraSnapshotTexture {
@@ -165,7 +165,18 @@ impl CameraSnapshotTexture {
             show_borders: true,
             last_camera_dir: None,
             last_update_time: None,
+            minimum_update_interval: DEFAULT_UPDATE_INTERVAL,
         }
+    }
+
+    /// Sets the minimum interval between snapshot regenerations.
+    pub fn set_minimum_update_interval(&mut self, interval: Duration) {
+        self.minimum_update_interval = interval;
+    }
+
+    /// Sets the minimum interval between snapshot regenerations in milliseconds.
+    pub fn set_minimum_update_interval_ms(&mut self, interval_ms: u32) {
+        self.minimum_update_interval = Duration::from_millis(interval_ms as u64);
     }
 
     /// Sets extra uniform data that will be bound at binding 7 during patch dispatch.
@@ -200,7 +211,7 @@ impl CameraSnapshotTexture {
     pub fn needs_update(&self, _camera_dir: Vector3) -> bool {
         match self.last_update_time {
             None => true,
-            Some(t) => t.elapsed() >= UPDATE_INTERVAL,
+            Some(t) => t.elapsed() >= self.minimum_update_interval,
         }
     }
 
@@ -220,13 +231,6 @@ impl CameraSnapshotTexture {
     }
 
     // ─── GPU texture management ──────────────────────────────────
-
-    fn texture_2d_usage_bits() -> TextureUsageBits {
-        TextureUsageBits::SAMPLING_BIT
-            | TextureUsageBits::STORAGE_BIT
-            | TextureUsageBits::CAN_UPDATE_BIT
-            | TextureUsageBits::CAN_COPY_FROM_BIT
-    }
 
     /// Allocates shared 2D textures (main RD + local RD) for all LOD levels.
     /// Creates DOUBLE-BUFFERED pairs: front (for rendering) and back (for compute writes).
@@ -282,52 +286,13 @@ impl CameraSnapshotTexture {
     }
 
     fn create_shared_2d_texture(local_rd: &mut Gd<RenderingDevice>, size: u32) -> (Rid, Rid) {
-        let driver_handle = on_render_thread_sync(move || {
-            let mut main_rd = RenderingServer::singleton().get_rendering_device().unwrap();
-
-            let mut format = RdTextureFormat::new_gd();
-            format.set_texture_type(TextureType::TYPE_2D);
-            format.set_format(DataFormat::R8G8B8A8_UNORM);
-            format.set_width(size);
-            format.set_height(size);
-            format.set_depth(1);
-            format.set_array_layers(1);
-            format.set_mipmaps(1);
-            format.set_samples(TextureSamples::SAMPLES_1);
-            format.set_usage_bits(Self::texture_2d_usage_bits());
-
-            let view = RdTextureView::new_gd();
-            let main_rid = main_rd.texture_create(&format, &view);
-            assert!(main_rid.is_valid(), "Failed to create main 2D texture");
-
-            let handle = main_rd.get_driver_resource(DriverResource::TEXTURE, main_rid, 0);
-            (main_rid, handle)
-        });
-
-        let (main_rid, handle) = driver_handle;
-
-        let local_rd_send = RdSend(local_rd.clone());
-        let local_rid = on_render_thread_sync(move || {
-            let mut rd = local_rd_send;
-            let rid = rd.0.texture_create_from_extension(
-                TextureType::TYPE_2D,
-                DataFormat::R8G8B8A8_UNORM,
-                TextureSamples::SAMPLES_1,
-                Self::texture_2d_usage_bits(),
-                handle,
-                size as u64,
-                size as u64,
-                1,
-                1,
-            );
-            assert!(
-                rid.is_valid(),
-                "Failed to create local 2D texture from extension"
-            );
-            rid
-        });
-
-        (main_rid, local_rid)
+        create_shared_2d_texture_rids(
+            local_rd,
+            size,
+            size,
+            godot::classes::rendering_device::DataFormat::R8G8B8A8_UNORM,
+            shared_texture_2d_usage_bits(),
+        )
     }
 
     // ─── Compute pipeline / dispatch ─────────────────────────────
@@ -563,8 +528,9 @@ impl CameraSnapshotTexture {
         self.last_update_time = Some(Instant::now());
     }
 
-    /// Full update: every UPDATE_INTERVAL (100ms), move patches to the current
-    /// camera direction and regenerate textures. Between updates the patches
+    /// Full update: every configured minimum update interval, move patches to
+    /// the current camera direction and regenerate textures. Between updates
+    /// the patches
     /// stay fixed on the sphere surface like "snapshots from the past".
     /// Returns true if textures were regenerated.
     pub fn update(
@@ -924,6 +890,14 @@ mod tests {
     #[test]
     fn test_needs_update_no_previous() {
         let chain = CameraSnapshotTexture::new(4, 512, None, None);
+        assert!(chain.needs_update(Vector3::new(1.0, 0.0, 0.0)));
+    }
+
+    #[test]
+    fn test_set_minimum_update_interval_ms_allows_faster_updates() {
+        let mut chain = CameraSnapshotTexture::new(4, 512, None, None);
+        chain.set_minimum_update_interval_ms(0);
+        chain.last_update_time = Some(Instant::now());
         assert!(chain.needs_update(Vector3::new(1.0, 0.0, 0.0)));
     }
 

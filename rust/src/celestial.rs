@@ -7,10 +7,11 @@ use crate::layers::height_shader_terrain::CesHeightShaderTerrain;
 use crate::layers::scatter::{CesScatterRuntime, ScatterParams, DEFAULT_SCATTER_SHADER_PATH};
 use crate::layers::sphere_terrain::CesSphereTerrain;
 use crate::layers::CesLayer;
+use crate::shared_texture::{PackedTexture2DExtent, SharedPositionTexture};
 use crate::texture_gen::{CubemapTextureGen, TerrainParams};
 use godot::builtin::Callable;
 use godot::builtin::{
-    Color, PackedFloat32Array, PackedInt32Array, PackedVector2Array, PackedVector3Array,
+    Aabb, Color, PackedFloat32Array, PackedInt32Array, PackedVector2Array, PackedVector3Array,
     Transform3D, Variant, Vector2, Vector3,
 };
 use godot::classes::mesh::ArrayType;
@@ -18,12 +19,14 @@ use godot::classes::mesh::PrimitiveType;
 use godot::classes::multi_mesh::TransformFormat;
 use godot::classes::notify::Node3DNotification;
 use godot::classes::{
-    ArrayMesh, Camera3D, CollisionShape3D, ConcavePolygonShape3D, Engine, INode3D, Image,
-    ImageTexture3D, Material, Mesh, MultiMesh, MultiMeshInstance3D, Node, Node3D,
-    RenderingDevice, RenderingServer, Script, Shader, ShaderMaterial, StaticBody3D, Texture2Drd,
-    TextureCubemapRd,
+    ArrayMesh, Camera3D, Engine, INode3D, Image, ImageTexture3D, Material, Mesh, MultiMesh,
+    MultiMeshInstance3D, Node, Node3D, RenderingDevice, RenderingServer, Script, Shader,
+    ShaderMaterial, Texture2Drd, TextureCubemapRd,
 };
 use godot::prelude::*;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,7 +42,9 @@ fn non_null_elements<T: GodotClass + Inherits<Resource>>(arr: &Array<Gd<T>>) -> 
     let mut result = Vec::new();
     for i in 0..any.len() {
         let Some(variant) = any.get(i) else { continue };
-        let Ok(gd) = variant.try_to::<Gd<T>>() else { continue };
+        let Ok(gd) = variant.try_to::<Gd<T>>() else {
+            continue;
+        };
         result.push(gd);
     }
     result
@@ -68,12 +73,16 @@ fn count_enabled_scatter_layers(arr: &Array<Gd<CesScatterLayerResource>>) -> usi
 }
 
 /// Finalises runtime scatter params with the active planet radius.
-fn scatter_params_with_runtime_context(
-    mut params: ScatterParams,
-    radius: f32,
-) -> ScatterParams {
+fn scatter_params_with_runtime_context(mut params: ScatterParams, radius: f32) -> ScatterParams {
     params.planet_radius = radius;
     params
+}
+
+fn should_enable_vertex_position_texture_material(
+    experimental_vertex_position_texture_spike: bool,
+    has_vertex_texture: bool,
+) -> bool {
+    experimental_vertex_position_texture_spike && has_vertex_texture
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -358,11 +367,39 @@ struct SettingsSnapshot {
     triangle_screen_size: f32,
     low_poly_look: bool,
     precise_normals: bool,
-    generate_collision: bool,
     show_debug_messages: bool,
+    show_debug_lod_histogram: bool,
     seed: i32,
     debug_snapshot_angle_offset: f32,
     show_snapshot_borders: bool,
+    minimum_lod_update_time_ms: u32,
+    scatter_force_shrink_each_dispatch: bool,
+    experimental_vertex_position_texture_spike: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct VertexTextureBinding {
+    main_rid: Rid,
+    extent: PackedTexture2DExtent,
+    enabled: bool,
+    /// Vertex count the worker dispatched for this frame. Carried separately
+    /// from any placeholder Vec so the worker can skip allocating a multi-MB
+    /// zeroed buffer just to derive the count on the main thread.
+    vertex_count: u32,
+}
+
+impl VertexTextureBinding {
+    fn disabled() -> Self {
+        Self {
+            main_rid: Rid::Invalid,
+            extent: PackedTexture2DExtent {
+                width: 1,
+                height: 1,
+            },
+            enabled: false,
+            vertex_count: 0,
+        }
+    }
 }
 
 struct MeshResult {
@@ -380,6 +417,12 @@ struct MeshResult {
     /// Number of transforms written per scatter layer (n_tris * density).
     /// Parallel to `scatter_buffers`.
     scatter_instance_counts: Vec<u32>,
+    /// Worker-side timing snapshot for this frame. None when timing disabled.
+    timing: Option<crate::perf::TimingTree>,
+    /// Experimental shared position texture written on the worker/local RD and
+    /// sampled by the main material in `vertex()`.
+    vertex_texture: VertexTextureBinding,
+    placeholder: Option<Vec<Vector3>>,
 }
 
 enum TextureCommand {
@@ -409,8 +452,15 @@ struct WorkerConfig {
     precise_normals: bool,
     low_poly_look: bool,
     show_debug_messages: bool,
+    show_debug_lod_histogram: bool,
     debug_snapshot_angle_offset: f32,
     show_snapshot_borders: bool,
+    minimum_lod_update_time_ms: u32,
+    scatter_force_shrink_each_dispatch: bool,
+    experimental_vertex_position_texture_spike: bool,
+    /// Debug bisect toggle forwarded from the inspector. When enabled, the
+    /// worker returns before running the expensive mesh-generation path.
+    debug_return_early_from_process: bool,
     scatter_params: Vec<ScatterParams>,
 }
 
@@ -422,8 +472,12 @@ struct WorkerState {
     normal_texture_gen: CubemapTextureGen,
     terrain_params: Option<TerrainParams>,
     snapshot_chain: CameraSnapshotTexture,
+    position_texture: SharedPositionTexture,
     /// Parallel to the enabled scatter layers (same order). One runtime per layer.
     scatter_runtimes: Vec<CesScatterRuntime>,
+    /// Last `vertex_count` for which we shipped a placeholder Vec to the main
+    /// thread. None until the first texture-branch frame.
+    last_placeholder_vertex_count: Option<u32>,
 }
 
 struct ScopedTimer {
@@ -493,19 +547,48 @@ pub struct CesCelestialRust {
     precise_normals: bool,
 
     #[export]
-    generate_collision: bool,
-
-    #[export]
     show_debug_messages: bool,
+
+    /// Path of a CSV file that receives one row per `TimingNode` per frame
+    /// when `show_debug_messages` is also enabled. Empty disables logging.
+    /// Accepts `res://` and `user://` paths (resolved via `ProjectSettings`)
+    /// or absolute filesystem paths.
+    #[export]
+    perf_csv_path: GString,
+
+    /// Tag written to the `phase` column of every CSV row. Set from GDScript
+    /// to mark before/after measurements.
+    #[export]
+    phase_label: GString,
+
+    /// Debug perf toggle: force scatter runtimes to free + reallocate their
+    /// output transform buffer every dispatch to test oversized-buffer
+    /// readback cost.
+    #[export]
+    scatter_force_shrink_each_dispatch: bool,
+
+    /// When true, perform extra GPU readbacks each frame to print the LOD
+    /// histogram. Skews timing measurements; keep off when profiling.
+    #[export]
+    show_debug_lod_histogram: bool,
 
     #[export]
     show_process_timing: bool,
+
+    /// Debug toggle: when enabled, `_process` returns immediately before any
+    /// timing-tree setup, worker-result application, or new work dispatch.
+    #[export]
+    debug_return_early_from_process: bool,
 
     #[export]
     simulated_process_delay_ms: u32,
 
     #[export]
     seed: i32,
+
+    /// Minimum time between LOD-driven worker updates.
+    #[export]
+    minimum_lod_update_time_ms: u32,
 
     /// Debug: angular offset (radians) applied to snapshot center direction.
     /// Set non-zero to animate snapshot positions independently of camera.
@@ -515,6 +598,11 @@ pub struct CesCelestialRust {
     /// Show red debug borders on LOD snapshot patches.
     #[export]
     show_snapshot_borders: bool,
+
+    /// Experimental shared vertex-position texture path. Disabled by default
+    /// and intentionally separate from the normal CPU-readback final-state path.
+    #[export]
+    experimental_vertex_position_texture_spike: bool,
 
     #[export]
     height_layers: Array<Gd<CesHeightLayerResource>>,
@@ -527,9 +615,24 @@ pub struct CesCelestialRust {
 
     instance: Rid,
     mesh: Option<Gd<ArrayMesh>>,
+    /// `ShaderMaterial` reused with the cached placeholder mesh. Building a
+    /// fresh `ShaderMaterial` and calling `surface_set_material` every frame
+    /// costs ~14 ms in the spike path; with the cached mesh we keep the same
+    /// material bound and only update parameters that actually change per
+    /// frame (snapshot LOD metadata via `apply_lod_shader_params`).
+    placeholder_material_cache: Option<Gd<ShaderMaterial>>,
+    /// Cache of the placeholder `ArrayMesh` used by the experimental vertex-
+    /// position-texture path, keyed by `vertex_count`. When the next worker
+    /// result reports the same vertex count, we reuse the cached mesh and skip
+    /// `pack_vertices`/`pack_indices`/`pack_uvs`/`add_surface_from_arrays`.
+    /// Cleared whenever `self.mesh = None` is set so legacy and spike paths
+    /// can never alias the same `Gd<ArrayMesh>`.
+    placeholder_mesh_cache: Option<(u32, Gd<ArrayMesh>)>,
     active_shader: Option<Gd<Shader>>,
     cubemap_texture: Option<Gd<TextureCubemapRd>>,
     normal_cubemap_texture: Option<Gd<TextureCubemapRd>>,
+    vertex_position_texture: Option<Gd<Texture2Drd>>,
+    vertex_position_texture_size: Vector2,
     snapshot_textures: Vec<Option<Gd<Texture2Drd>>>,
     snapshot_normal_textures: Vec<Option<Gd<Texture2Drd>>>,
     snapshot_info: Vec<(Vector3, Vector3, Vector3, f32)>,
@@ -542,6 +645,7 @@ pub struct CesCelestialRust {
     gen_mesh_running: bool,
     last_cam_position: Vector3,
     last_obj_transform: Transform3D,
+    last_lod_update_time: Option<Instant>,
     last_settings: SettingsSnapshot,
     last_structure_id: String,
     values_updated: bool,
@@ -565,6 +669,14 @@ pub struct CesCelestialRust {
     scatter_mask_noise_strength: f32,
     scatter_mask_target_color: Color,
     scatter_mask_color_tolerance: f32,
+
+    /// Monotonic per-instance frame counter, incremented each time a frame's
+    /// timing tree is finalised and printed.
+    frame_counter: u64,
+    /// Lazily-opened buffered writer for `perf_csv_path`.
+    perf_csv_file: Option<BufWriter<File>>,
+    /// Path string used to open `perf_csv_file` (so we can detect changes and reopen).
+    perf_csv_open_path: String,
 }
 
 #[godot_api]
@@ -579,21 +691,31 @@ impl INode3D for CesCelestialRust {
             triangle_screen_size: 0.1,
             low_poly_look: true,
             precise_normals: false,
-            generate_collision: false,
             show_debug_messages: false,
+            perf_csv_path: GString::new(),
+            phase_label: GString::new(),
+            scatter_force_shrink_each_dispatch: false,
+            show_debug_lod_histogram: false,
             show_process_timing: false,
+            debug_return_early_from_process: false,
             simulated_process_delay_ms: 0,
             seed: 0,
+            minimum_lod_update_time_ms: 100,
             debug_snapshot_angle_offset: 0.0,
             show_snapshot_borders: true,
+            experimental_vertex_position_texture_spike: false,
             height_layers: Array::new(),
             texture_layers: Array::new(),
             scatter_layers: Array::new(),
             instance: Rid::Invalid,
             mesh: None,
+            placeholder_mesh_cache: None,
+            placeholder_material_cache: None,
             active_shader: None,
             cubemap_texture: None,
             normal_cubemap_texture: None,
+            vertex_position_texture: None,
+            vertex_position_texture_size: Vector2::new(1.0, 1.0),
             snapshot_textures: Vec::new(),
             snapshot_normal_textures: Vec::new(),
             snapshot_info: Vec::new(),
@@ -606,17 +728,21 @@ impl INode3D for CesCelestialRust {
             gen_mesh_running: false,
             last_cam_position: Vector3::ZERO,
             last_obj_transform: Transform3D::IDENTITY,
+            last_lod_update_time: None,
             last_settings: SettingsSnapshot {
                 radius: 1.0,
                 subdivisions: 3,
                 triangle_screen_size: 0.1,
                 low_poly_look: true,
                 precise_normals: false,
-                generate_collision: false,
                 show_debug_messages: false,
+                show_debug_lod_histogram: false,
                 seed: 0,
                 debug_snapshot_angle_offset: 0.0,
                 show_snapshot_borders: true,
+                minimum_lod_update_time_ms: 100,
+                scatter_force_shrink_each_dispatch: false,
+                experimental_vertex_position_texture_spike: false,
             },
             values_updated: false,
             is_shutting_down: false,
@@ -631,6 +757,9 @@ impl INode3D for CesCelestialRust {
             scatter_mask_noise_strength: 1.0,
             scatter_mask_target_color: Color::from_rgba(0.2, 0.6, 0.2, 1.0),
             scatter_mask_color_tolerance: 0.3,
+            frame_counter: 0,
+            perf_csv_file: None,
+            perf_csv_open_path: String::new(),
         }
     }
 
@@ -638,12 +767,14 @@ impl INode3D for CesCelestialRust {
         if Engine::singleton().is_editor_hint() {
             self.is_shutting_down = false;
             self.gen_mesh_running = false;
+            self.last_lod_update_time = None;
             self.values_updated = true;
             return;
         }
 
         self.is_shutting_down = false;
         self.gen_mesh_running = false;
+        self.last_lod_update_time = None;
         self.values_updated = true;
 
         let mut rs = RenderingServer::singleton();
@@ -655,6 +786,8 @@ impl INode3D for CesCelestialRust {
         let mesh = ArrayMesh::new_gd();
         rs.instance_set_base(self.instance, mesh.get_rid());
         self.mesh = Some(mesh);
+        self.vertex_position_texture = None;
+        self.vertex_position_texture_size = Vector2::new(1.0, 1.0);
 
         // RD is now owned by the worker thread
         let mut rd = rs.create_local_rendering_device().unwrap();
@@ -688,6 +821,7 @@ impl INode3D for CesCelestialRust {
         // Texture layers — last active layer's shader wins
         self.active_shader = None;
         let mut snapshot_chain = CameraSnapshotTexture::new(0, 512, None, None);
+        snapshot_chain.set_minimum_update_interval_ms(self.minimum_lod_update_time_ms);
         godot_print!(
             "[CesCelestialRust] Processing {} texture layers",
             self.texture_layers.len()
@@ -742,6 +876,7 @@ impl INode3D for CesCelestialRust {
                         color_shader,
                         None,
                     );
+                    chain.set_minimum_update_interval_ms(self.minimum_lod_update_time_ms);
                     chain.allocate_textures(&mut rd);
                     self.snapshot_textures.clear();
                     self.snapshot_normal_textures.clear();
@@ -820,6 +955,7 @@ impl INode3D for CesCelestialRust {
                         color_shader,
                         normal_shader,
                     );
+                    chain.set_minimum_update_interval_ms(self.minimum_lod_update_time_ms);
                     if let Some(ref tp) = terrain_params {
                         chain.set_extra_params(bytemuck::bytes_of(tp).to_vec());
                     }
@@ -848,15 +984,21 @@ impl INode3D for CesCelestialRust {
                 let noise_v = layer_gd.get("noise_strength");
                 let color_v = layer_gd.get("target_color");
                 let tol_v = layer_gd.get("color_tolerance");
-                self.scatter_mask_noise_strength =
-                    if noise_v.is_nil() { 1.0 } else { noise_v.to::<f32>() };
+                self.scatter_mask_noise_strength = if noise_v.is_nil() {
+                    1.0
+                } else {
+                    noise_v.to::<f32>()
+                };
                 self.scatter_mask_target_color = if color_v.is_nil() {
                     Color::from_rgba(0.2, 0.6, 0.2, 1.0)
                 } else {
                     color_v.to::<Color>()
                 };
-                self.scatter_mask_color_tolerance =
-                    if tol_v.is_nil() { 0.3 } else { tol_v.to::<f32>() };
+                self.scatter_mask_color_tolerance = if tol_v.is_nil() {
+                    0.3
+                } else {
+                    tol_v.to::<f32>()
+                };
                 if self.blue_noise_bytes.is_empty() {
                     self.blue_noise_bytes = load_blue_noise_bytes();
                 }
@@ -866,6 +1008,15 @@ impl INode3D for CesCelestialRust {
                     godot_print!("[CesCelestialRust] Built blue-noise Texture3D for scatter mask");
                 }
             }
+        }
+
+        if self.active_shader.is_none() && self.experimental_vertex_position_texture_spike {
+            let shader =
+                load::<Shader>("res://addons/celestial_sim/shaders/planet_texture.gdshader");
+            self.active_shader = Some(shader);
+            godot_print!(
+                "[CesCelestialRust] Spike fallback: bound planet_texture.gdshader (no texture layer enabled)"
+            );
         }
 
         let scatter_runtimes = self.build_scatter_runtimes();
@@ -880,197 +1031,50 @@ impl INode3D for CesCelestialRust {
             scatter_runtimes,
         );
         self.cubemap_resolution_active = self.find_cubemap_resolution();
-        self.last_structure_id = layers_structure_id(&self.height_layers, &self.texture_layers, &self.scatter_layers);
+        self.last_structure_id = layers_structure_id(
+            &self.height_layers,
+            &self.texture_layers,
+            &self.scatter_layers,
+        );
         self.connect_layer_signals();
         self.build_scatter_mmi_children();
     }
 
     fn ready(&mut self) {
-        self.add_subnodes();
         self.last_settings = self.current_settings();
         self.values_updated = true;
     }
 
     fn process(&mut self, _delta: f64) {
-        let _process_timer = ScopedTimer::new("CesCelestialRust::process", self.show_process_timing);
-        let should_run_preview = self.should_run_editor_preview();
-        if !should_run_preview {
-            if self.instance.is_valid() || self.work_tx.is_some() || self.worker_handle.is_some() {
-                self.shutdown_for_reload_or_exit();
-            }
-            return;
-        }
+        let _process_timer =
+            ScopedTimer::new("CesCelestialRust::process", self.show_process_timing);
 
-        if !self.instance.is_valid() || self.work_tx.is_none() || self.worker_handle.is_none() {
-            self.restart_with_current_layers();
-            return;
-        }
-
-        if self.is_shutting_down {
-            return;
-        }
-
-        // Detect structural changes (layer added/removed/reordered/enabled toggle)
-        let current_sid = layers_structure_id(&self.height_layers, &self.texture_layers, &self.scatter_layers);
-        if current_sid != self.last_structure_id {
-            self.last_structure_id = current_sid;
-            self.disconnect_layer_signals();
-            self.connect_layer_signals();
-            self.layers_dirty = true;
-            self.structural_dirty = true;
-        }
-
-        // Handle dirty flag immediately — the worker thread is the natural gate
-        if self.layers_dirty {
-            self.layers_dirty = false;
-            // Property-only changes on the scatter mask layer (noise_strength,
-            // target_color, color_tolerance) only need a uniform re-bind on the
-            // existing planet material. Re-read them and re-apply to the live
-            // material so slider drags are reflected immediately without a
-            // full restart.
-            self.refresh_scatter_mask_params();
-            self.reapply_planet_shader_params();
-            if self.structural_dirty {
-                // Structural change: full restart (layer add/remove/enable, resolution, normal toggle)
-                self.structural_dirty = false;
-                let t0 = Instant::now();
-                self.restart_with_current_layers();
-                let ms = t0.elapsed().as_secs_f64() * 1000.0;
-                godot_print!("AlgoTiming step Restart: {:.3} ms", ms);
-            } else {
-                // Property-only change (terrain params): send to worker
-                // While the worker is busy, commands queue up; it drains and keeps only the last.
-                self.structural_dirty = false;
-                if let Some(tp) = self.find_terrain_params() {
-                    if let Some(ref tx) = self.texture_cmd_tx {
-                        let _ = tx.send(TextureCommand::ParamsChanged {
-                            terrain_params: tp,
-                            radius: self.radius,
-                        });
-                    }
-                }
-                self.values_updated = true;
-            }
-            return;
-        }
-
-        // Check if cubemap resolution changed — send lightweight regenerate command
-        if self.check_cubemap_restart_needed() {
-            let new_resolution = self.find_cubemap_resolution();
-            if let Some(ref tx) = self.texture_cmd_tx {
-                let _ = tx.send(TextureCommand::Regenerate {
-                    size: new_resolution,
-                    radius: self.radius,
-                    terrain_params: self.find_terrain_params(),
-                });
-            }
-            self.cubemap_resolution_active = new_resolution;
-            // Force a work dispatch so the worker wakes up and processes the texture command
-            self.values_updated = true;
-        }
-
-        // Check for completed texture regeneration results
-        if let Some(ref rx) = self.texture_result_rx {
-            while let Ok(result) = rx.try_recv() {
-                let mut tex = TextureCubemapRd::new_gd();
-                tex.set_texture_rd_rid(result.main_texture_rid);
-                self.cubemap_texture = Some(tex);
-                // Free the old main texture now that it's no longer referenced by materials.
-                if result.old_main_texture_rid.is_valid() {
-                    let old_rid = result.old_main_texture_rid;
-                    crate::compute_utils::on_render_thread(move || {
-                        let mut main_rd =
-                            RenderingServer::singleton().get_rendering_device().unwrap();
-                        main_rd.free_rid(old_rid);
-                    });
-                }
-                // Normal cubemap
-                if result.normal_main_texture_rid.is_valid() {
-                    let mut ntex = TextureCubemapRd::new_gd();
-                    ntex.set_texture_rd_rid(result.normal_main_texture_rid);
-                    self.normal_cubemap_texture = Some(ntex);
-                }
-                if result.normal_old_main_texture_rid.is_valid() {
-                    let old_rid = result.normal_old_main_texture_rid;
-                    crate::compute_utils::on_render_thread(move || {
-                        let mut main_rd =
-                            RenderingServer::singleton().get_rendering_device().unwrap();
-                        main_rd.free_rid(old_rid);
-                    });
-                }
-                self.values_updated = true;
-            }
-        }
-
-        if self.show_process_timing {
-            godot_print!("simulated_process_delay_ms = {}", self.simulated_process_delay_ms);
-        }
-        if self.simulated_process_delay_ms > 0 {
-            thread::sleep(Duration::from_millis(
-                self.simulated_process_delay_ms as u64,
-            ));
-        }
-        // 1. Check for completed results (non-blocking)
-        if let Some(ref result_rx) = self.result_rx {
-            if let Ok(result) = result_rx.try_recv() {
-                self.gen_mesh_running = false;
-                self.apply_mesh_result(result);
-            }
-        }
-
-        let global_transform = self.base().get_global_transform();
-        let mut rs = RenderingServer::singleton();
-        rs.instance_set_transform(self.instance, global_transform);
-
-        // 2. Check if we need new work
-        let cam = self.get_camera();
-        if cam.is_none() {
-            return;
-        }
-        let cam = cam.unwrap();
-        let cam_pos = cam.get_global_position();
-
-        let cam_local = global_transform.affine_inverse() * cam_pos;
-
-        let current_settings = self.current_settings();
-        let has_changed = global_transform != self.last_obj_transform
-            || cam_pos != self.last_cam_position
-            || current_settings != self.last_settings
-            || self.values_updated;
-
-        if !has_changed || self.gen_mesh_running {
-            return;
-        }
-
-        // 3. Update tracking state and dispatch work
-        self.last_obj_transform = global_transform;
-        self.last_cam_position = cam_pos;
-        self.last_settings = current_settings;
-        self.values_updated = false;
-
-        let config = WorkerConfig {
-            subdivisions: self.subdivisions,
-            radius: self.radius,
-            triangle_screen_size: self.triangle_screen_size,
-            precise_normals: self.precise_normals,
-            low_poly_look: self.low_poly_look,
-            show_debug_messages: self.show_debug_messages,
-            debug_snapshot_angle_offset: self.debug_snapshot_angle_offset,
-            show_snapshot_borders: read_show_snapshot_borders(
-                &self.texture_layers,
-                self.show_snapshot_borders,
-            ),
-            scatter_params: read_enabled_scatter_layer_params(&self.scatter_layers),
+        // Install a per-frame timing tree for the main thread so any
+        // ThreadScope::enter() calls inside the body (including those nested
+        // inside apply_mesh_result) accumulate into a single tree we can
+        // emit at the end of the frame.
+        let mut process_tree = if self.show_debug_messages {
+            crate::perf::TimingTree::new()
+        } else {
+            crate::perf::TimingTree::disabled()
         };
 
-        if let Some(ref work_tx) = self.work_tx {
-            if work_tx.send((cam_local, config)).is_ok() {
-                self.gen_mesh_running = true;
-            } else {
-                godot_print!("[CesCelestialRust] ERROR: Failed to send work to worker thread");
+        let applied_worker_timing: Option<crate::perf::TimingTree> = {
+            let _tree_guard = crate::perf::install_thread_tree(&mut process_tree);
+            let _root_scope = crate::perf::ThreadScope::enter("process_body");
+            self.process_body()
+        };
+
+        // Emit ASCII tree + CSV row for the frame, but only when something
+        // meaningful happened (apply_mesh_result was called this frame).
+        if self.show_debug_messages && applied_worker_timing.is_some() {
+            if let Some(worker_tree) = applied_worker_timing {
+                process_tree.merge_subtree("worker", worker_tree);
             }
-        } else {
-            godot_print!("[CesCelestialRust] ERROR: work_tx is None, worker not spawned");
+            let frame_id = self.frame_counter;
+            self.frame_counter = self.frame_counter.wrapping_add(1);
+            godot_print!("Frame timing tree:\n{}", process_tree.render_ascii());
+            self.log_timing_tree_csv(&process_tree, frame_id);
         }
     }
 
@@ -1086,6 +1090,78 @@ impl INode3D for CesCelestialRust {
 }
 
 impl CesCelestialRust {
+    /// Resolve a Godot-style path (`res://` / `user://`) to an absolute
+    /// filesystem path via `ProjectSettings::globalize_path`. Plain paths are
+    /// returned unchanged.
+    fn resolve_log_path(raw: &str) -> PathBuf {
+        if raw.starts_with("res://") || raw.starts_with("user://") {
+            let ps = godot::classes::ProjectSettings::singleton();
+            let globalised = ps.globalize_path(raw);
+            PathBuf::from(globalised.to_string())
+        } else {
+            PathBuf::from(raw)
+        }
+    }
+
+    /// Append every node in `tree` to the configured CSV log file (if any),
+    /// tagged with the supplied frame id and the current `phase_label`.
+    /// Opens / re-opens the file lazily, writing the header on first use.
+    fn log_timing_tree_csv(&mut self, tree: &crate::perf::TimingTree, frame_id: u64) {
+        let raw = self.perf_csv_path.to_string();
+        if raw.is_empty() {
+            return;
+        }
+
+        // Reopen if path changed since last open.
+        if self.perf_csv_open_path != raw {
+            self.perf_csv_file = None;
+            self.perf_csv_open_path.clear();
+        }
+
+        if self.perf_csv_file.is_none() {
+            let path = Self::resolve_log_path(&raw);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // If the file doesn't yet exist, we'll need to write the header.
+            let needs_header = !path.exists()
+                || std::fs::metadata(&path)
+                    .map(|m| m.len() == 0)
+                    .unwrap_or(true);
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(f) => {
+                    let mut w = BufWriter::new(f);
+                    if needs_header {
+                        if let Err(e) = writeln!(w, "{}", crate::perf::csv_header()) {
+                            godot_warn!("perf_csv: failed to write header to {raw}: {e}");
+                            return;
+                        }
+                    }
+                    self.perf_csv_file = Some(w);
+                    self.perf_csv_open_path = raw.clone();
+                }
+                Err(e) => {
+                    godot_warn!("perf_csv: failed to open {raw}: {e}");
+                    return;
+                }
+            }
+        }
+
+        let phase = self.phase_label.to_string();
+        let rows = crate::perf::render_tree_csv_rows(tree.root(), frame_id, &phase);
+        if let Some(w) = self.perf_csv_file.as_mut() {
+            for row in &rows {
+                if let Err(e) = writeln!(w, "{}", crate::perf::format_csv_row(row)) {
+                    godot_warn!("perf_csv: write failed: {e}");
+                    break;
+                }
+            }
+            if let Err(e) = w.flush() {
+                godot_warn!("perf_csv: flush failed: {e}");
+            }
+        }
+    }
+
     fn shutdown_for_reload_or_exit(&mut self) {
         if self.is_shutting_down {
             return;
@@ -1105,12 +1181,21 @@ impl CesCelestialRust {
                 rs.free_rid(mesh.get_rid());
             }
             self.mesh = None;
+            // The placeholder cache shares its underlying RID with `self.mesh`
+            // when the spike path is active; freeing the mesh above already
+            // released that RID, so just drop the cached `Gd<ArrayMesh>` here.
+            self.placeholder_mesh_cache = None;
+            self.placeholder_material_cache = None;
+            self.vertex_position_texture = None;
+            self.vertex_position_texture_size = Vector2::new(1.0, 1.0);
         }))
         .is_err()
         {
             eprintln!("CesCelestialRust shutdown: failed to free scene RIDs (engine unavailable)");
             self.instance = Rid::Invalid;
             self.mesh = None;
+            self.placeholder_mesh_cache = None;
+            self.placeholder_material_cache = None;
         }
 
         // Signal worker to stop and stop accepting results.
@@ -1121,6 +1206,8 @@ impl CesCelestialRust {
         self.snapshot_textures.clear();
         self.snapshot_normal_textures.clear();
         self.snapshot_info.clear();
+        self.vertex_position_texture = None;
+        self.vertex_position_texture_size = Vector2::new(1.0, 1.0);
 
         // Always join the worker before unload to avoid executing old code after DLL reload.
         if let Some(handle) = self.worker_handle.take() {
@@ -1141,6 +1228,7 @@ impl CesCelestialRust {
                     worker.texture_gen.dispose_local(&mut worker.rd);
                     worker.normal_texture_gen.dispose_local(&mut worker.rd);
                     worker.snapshot_chain.dispose_local(&mut worker.rd);
+                    worker.position_texture.dispose_local(&mut worker.rd);
                     worker.rd.free();
                 }
                 Err(_) => {
@@ -1159,6 +1247,7 @@ impl CesCelestialRust {
         // Re-initialize
         self.is_shutting_down = false;
         self.gen_mesh_running = false;
+        self.last_lod_update_time = None;
         self.values_updated = true;
 
         let mut rs = RenderingServer::singleton();
@@ -1170,6 +1259,8 @@ impl CesCelestialRust {
         let mesh = ArrayMesh::new_gd();
         rs.instance_set_base(self.instance, mesh.get_rid());
         self.mesh = Some(mesh);
+        self.vertex_position_texture = None;
+        self.vertex_position_texture_size = Vector2::new(1.0, 1.0);
 
         let mut rd = rs.create_local_rendering_device().unwrap();
 
@@ -1197,6 +1288,7 @@ impl CesCelestialRust {
 
         self.active_shader = None;
         let mut snapshot_chain = CameraSnapshotTexture::new(0, 512, None, None);
+        snapshot_chain.set_minimum_update_interval_ms(self.minimum_lod_update_time_ms);
         for layer_gd in non_null_elements(&self.texture_layers).into_iter() {
             if !layer_gd.bind().enabled {
                 continue;
@@ -1239,6 +1331,7 @@ impl CesCelestialRust {
                         color_shader,
                         None,
                     );
+                    chain.set_minimum_update_interval_ms(self.minimum_lod_update_time_ms);
                     chain.allocate_textures(&mut rd);
                     self.snapshot_textures.clear();
                     self.snapshot_normal_textures.clear();
@@ -1315,6 +1408,7 @@ impl CesCelestialRust {
                         color_shader,
                         normal_shader,
                     );
+                    chain.set_minimum_update_interval_ms(self.minimum_lod_update_time_ms);
                     if let Some(ref tp) = terrain_params {
                         chain.set_extra_params(bytemuck::bytes_of(tp).to_vec());
                     }
@@ -1343,15 +1437,21 @@ impl CesCelestialRust {
                 let noise_v = layer_gd.get("noise_strength");
                 let color_v = layer_gd.get("target_color");
                 let tol_v = layer_gd.get("color_tolerance");
-                self.scatter_mask_noise_strength =
-                    if noise_v.is_nil() { 1.0 } else { noise_v.to::<f32>() };
+                self.scatter_mask_noise_strength = if noise_v.is_nil() {
+                    1.0
+                } else {
+                    noise_v.to::<f32>()
+                };
                 self.scatter_mask_target_color = if color_v.is_nil() {
                     Color::from_rgba(0.2, 0.6, 0.2, 1.0)
                 } else {
                     color_v.to::<Color>()
                 };
-                self.scatter_mask_color_tolerance =
-                    if tol_v.is_nil() { 0.3 } else { tol_v.to::<f32>() };
+                self.scatter_mask_color_tolerance = if tol_v.is_nil() {
+                    0.3
+                } else {
+                    tol_v.to::<f32>()
+                };
                 if self.blue_noise_bytes.is_empty() {
                     self.blue_noise_bytes = load_blue_noise_bytes();
                 }
@@ -1361,6 +1461,15 @@ impl CesCelestialRust {
                     godot_print!("[CesCelestialRust] Built blue-noise Texture3D for scatter mask");
                 }
             }
+        }
+
+        if self.active_shader.is_none() && self.experimental_vertex_position_texture_spike {
+            let shader =
+                load::<Shader>("res://addons/celestial_sim/shaders/planet_texture.gdshader");
+            self.active_shader = Some(shader);
+            godot_print!(
+                "[CesCelestialRust] Spike fallback: bound planet_texture.gdshader (no texture layer enabled)"
+            );
         }
 
         let scatter_runtimes = self.build_scatter_runtimes();
@@ -1375,7 +1484,11 @@ impl CesCelestialRust {
             scatter_runtimes,
         );
         self.cubemap_resolution_active = self.find_cubemap_resolution();
-        self.last_structure_id = layers_structure_id(&self.height_layers, &self.texture_layers, &self.scatter_layers);
+        self.last_structure_id = layers_structure_id(
+            &self.height_layers,
+            &self.texture_layers,
+            &self.scatter_layers,
+        );
         self.connect_layer_signals();
         self.build_scatter_mmi_children();
     }
@@ -1403,14 +1516,29 @@ impl CesCelestialRust {
             triangle_screen_size: self.triangle_screen_size,
             low_poly_look: self.low_poly_look,
             precise_normals: self.precise_normals,
-            generate_collision: self.generate_collision,
             show_debug_messages: self.show_debug_messages,
+            show_debug_lod_histogram: self.show_debug_lod_histogram,
             seed: self.seed,
             debug_snapshot_angle_offset: self.debug_snapshot_angle_offset,
             show_snapshot_borders: read_show_snapshot_borders(
                 &self.texture_layers,
                 self.show_snapshot_borders,
             ),
+            minimum_lod_update_time_ms: self.minimum_lod_update_time_ms,
+            scatter_force_shrink_each_dispatch: self.scatter_force_shrink_each_dispatch,
+            experimental_vertex_position_texture_spike: self
+                .experimental_vertex_position_texture_spike,
+        }
+    }
+
+    fn minimum_lod_update_interval(&self) -> Duration {
+        Duration::from_millis(self.minimum_lod_update_time_ms as u64)
+    }
+
+    fn can_dispatch_lod_update(&self) -> bool {
+        match self.last_lod_update_time {
+            None => true,
+            Some(t) => t.elapsed() >= self.minimum_lod_update_interval(),
         }
     }
 
@@ -1461,8 +1589,240 @@ impl CesCelestialRust {
         self.base().get_viewport().and_then(|vp| vp.get_camera_3d())
     }
 
-    fn apply_mesh_result(&mut self, result: MeshResult) {
-        let has_mesh = !result.pos.is_empty() && !result.triangles.is_empty();
+    /// Main-thread `_process` body. Extracted from `process` so the timing
+    /// tree install at the top of `process` can wrap the whole body even
+    /// across early returns. Returns `Some(worker_tree)` if `apply_mesh_result`
+    /// was called this tick (signalling that a frame timing tree should be
+    /// emitted), and `None` otherwise.
+    fn process_body(&mut self) -> Option<crate::perf::TimingTree> {
+        let should_run_preview = self.should_run_editor_preview();
+        if !should_run_preview {
+            if self.instance.is_valid() || self.work_tx.is_some() || self.worker_handle.is_some() {
+                self.shutdown_for_reload_or_exit();
+            }
+            return None;
+        }
+
+        if !self.instance.is_valid() || self.work_tx.is_none() || self.worker_handle.is_none() {
+            self.restart_with_current_layers();
+            return None;
+        }
+
+        if self.is_shutting_down {
+            return None;
+        }
+
+        // Detect structural changes (layer added/removed/reordered/enabled toggle)
+        {
+            let _g = crate::perf::ThreadScope::enter("dirty_handling");
+            let current_sid = layers_structure_id(
+                &self.height_layers,
+                &self.texture_layers,
+                &self.scatter_layers,
+            );
+            if current_sid != self.last_structure_id {
+                self.last_structure_id = current_sid;
+                self.disconnect_layer_signals();
+                self.connect_layer_signals();
+                self.layers_dirty = true;
+                self.structural_dirty = true;
+            }
+
+            // Handle dirty flag immediately — the worker thread is the natural gate
+            if self.layers_dirty {
+                self.layers_dirty = false;
+                // Property-only changes on the scatter mask layer (noise_strength,
+                // target_color, color_tolerance) only need a uniform re-bind on the
+                // existing planet material. Re-read them and re-apply to the live
+                // material so slider drags are reflected immediately without a
+                // full restart.
+                self.refresh_scatter_mask_params();
+                self.reapply_planet_shader_params();
+                if self.structural_dirty {
+                    // Structural change: full restart (layer add/remove/enable, resolution, normal toggle)
+                    self.structural_dirty = false;
+                    let t0 = Instant::now();
+                    self.restart_with_current_layers();
+                    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                    godot_print!("AlgoTiming step Restart: {:.3} ms", ms);
+                } else {
+                    // Property-only change (terrain params): send to worker
+                    // While the worker is busy, commands queue up; it drains and keeps only the last.
+                    self.structural_dirty = false;
+                    if let Some(tp) = self.find_terrain_params() {
+                        if let Some(ref tx) = self.texture_cmd_tx {
+                            let _ = tx.send(TextureCommand::ParamsChanged {
+                                terrain_params: tp,
+                                radius: self.radius,
+                            });
+                        }
+                    }
+                    self.values_updated = true;
+                }
+                return None;
+            }
+        }
+
+        // Check if cubemap resolution changed — send lightweight regenerate command
+        {
+            let _g = crate::perf::ThreadScope::enter("check_cubemap_restart");
+            if self.check_cubemap_restart_needed() {
+                let new_resolution = self.find_cubemap_resolution();
+                if let Some(ref tx) = self.texture_cmd_tx {
+                    let _ = tx.send(TextureCommand::Regenerate {
+                        size: new_resolution,
+                        radius: self.radius,
+                        terrain_params: self.find_terrain_params(),
+                    });
+                }
+                self.cubemap_resolution_active = new_resolution;
+                // Force a work dispatch so the worker wakes up and processes the texture command
+                self.values_updated = true;
+            }
+        }
+
+        // Check for completed texture regeneration results
+        {
+            let _g = crate::perf::ThreadScope::enter("texture_result_drain");
+            if let Some(ref rx) = self.texture_result_rx {
+                while let Ok(result) = rx.try_recv() {
+                    let mut tex = TextureCubemapRd::new_gd();
+                    tex.set_texture_rd_rid(result.main_texture_rid);
+                    self.cubemap_texture = Some(tex);
+                    // Free the old main texture now that it's no longer referenced by materials.
+                    if result.old_main_texture_rid.is_valid() {
+                        let old_rid = result.old_main_texture_rid;
+                        crate::compute_utils::on_render_thread(move || {
+                            let mut main_rd =
+                                RenderingServer::singleton().get_rendering_device().unwrap();
+                            main_rd.free_rid(old_rid);
+                        });
+                    }
+                    // Normal cubemap
+                    if result.normal_main_texture_rid.is_valid() {
+                        let mut ntex = TextureCubemapRd::new_gd();
+                        ntex.set_texture_rd_rid(result.normal_main_texture_rid);
+                        self.normal_cubemap_texture = Some(ntex);
+                    }
+                    if result.normal_old_main_texture_rid.is_valid() {
+                        let old_rid = result.normal_old_main_texture_rid;
+                        crate::compute_utils::on_render_thread(move || {
+                            let mut main_rd =
+                                RenderingServer::singleton().get_rendering_device().unwrap();
+                            main_rd.free_rid(old_rid);
+                        });
+                    }
+                    self.values_updated = true;
+                }
+            }
+        }
+
+        if self.show_process_timing {
+            godot_print!(
+                "simulated_process_delay_ms = {}",
+                self.simulated_process_delay_ms
+            );
+        }
+        if self.simulated_process_delay_ms > 0 {
+            thread::sleep(Duration::from_millis(
+                self.simulated_process_delay_ms as u64,
+            ));
+        }
+        // 1. Check for completed results (non-blocking)
+        let mut applied_worker_timing: Option<crate::perf::TimingTree> = None;
+        {
+            let _g = crate::perf::ThreadScope::enter("worker_result_consume");
+            if let Some(ref result_rx) = self.result_rx {
+                if let Ok(result) = result_rx.try_recv() {
+                    self.gen_mesh_running = false;
+                    applied_worker_timing = self.apply_mesh_result(result);
+                    // Ensure we always return a Some (so the caller emits the
+                    // frame tree) even if the worker did not include timing.
+                    if applied_worker_timing.is_none() {
+                        applied_worker_timing = Some(crate::perf::TimingTree::disabled());
+                    }
+                }
+            }
+        }
+
+        let global_transform = self.base().get_global_transform();
+        let mut rs = RenderingServer::singleton();
+        rs.instance_set_transform(self.instance, global_transform);
+
+        // 2. Check if we need new work
+        let cam = self.get_camera();
+        if cam.is_none() {
+            return applied_worker_timing;
+        }
+        let cam = cam.unwrap();
+        let cam_pos = cam.get_global_position();
+
+        let cam_local = global_transform.affine_inverse() * cam_pos;
+
+        let current_settings = self.current_settings();
+        let has_changed = global_transform != self.last_obj_transform
+            || cam_pos != self.last_cam_position
+            || current_settings != self.last_settings
+            || self.values_updated;
+
+        if !has_changed || self.gen_mesh_running {
+            return applied_worker_timing;
+        }
+
+        if !self.can_dispatch_lod_update() {
+            return applied_worker_timing;
+        }
+
+        // 3. Update tracking state and dispatch work
+        self.last_obj_transform = global_transform;
+        self.last_cam_position = cam_pos;
+        self.last_settings = current_settings;
+        self.values_updated = false;
+
+        let config = WorkerConfig {
+            subdivisions: self.subdivisions,
+            radius: self.radius,
+            triangle_screen_size: self.triangle_screen_size,
+            precise_normals: self.precise_normals,
+            low_poly_look: self.low_poly_look,
+            show_debug_messages: self.show_debug_messages,
+            show_debug_lod_histogram: self.show_debug_lod_histogram,
+            debug_snapshot_angle_offset: self.debug_snapshot_angle_offset,
+            show_snapshot_borders: read_show_snapshot_borders(
+                &self.texture_layers,
+                self.show_snapshot_borders,
+            ),
+            minimum_lod_update_time_ms: self.minimum_lod_update_time_ms,
+            scatter_force_shrink_each_dispatch: self.scatter_force_shrink_each_dispatch,
+            experimental_vertex_position_texture_spike: self
+                .experimental_vertex_position_texture_spike,
+            debug_return_early_from_process: self.debug_return_early_from_process,
+            scatter_params: read_enabled_scatter_layer_params(&self.scatter_layers),
+        };
+
+        if let Some(ref work_tx) = self.work_tx {
+            if work_tx.send((cam_local, config)).is_ok() {
+                self.gen_mesh_running = true;
+                self.last_lod_update_time = Some(Instant::now());
+            } else {
+                godot_print!("[CesCelestialRust] ERROR: Failed to send work to worker thread");
+            }
+        } else {
+            godot_print!("[CesCelestialRust] ERROR: work_tx is None, worker not spawned");
+        }
+
+        applied_worker_timing
+    }
+
+    /// Apply a worker mesh result on the main thread. Returns the worker's
+    /// timing tree (if any) so the caller can merge it under the frame's
+    /// timing tree before emitting CSV.
+    fn apply_mesh_result(&mut self, result: MeshResult) -> Option<crate::perf::TimingTree> {
+        let _scope_apply = crate::perf::ThreadScope::enter("apply_mesh_result");
+
+        let has_mesh = (!result.pos.is_empty() && !result.triangles.is_empty())
+            || (result.vertex_texture.enabled && result.vertex_texture.vertex_count > 0);
+        let worker_timing = result.timing;
 
         // Apply snapshot data if present
         if result.snapshot_updated {
@@ -1483,93 +1843,250 @@ impl CesCelestialRust {
             self.snapshot_info = result.snapshot_level_info;
         }
 
+        if result.vertex_texture.enabled && result.vertex_texture.main_rid.is_valid() {
+            if let Some(ref mut tex) = self.vertex_position_texture {
+                tex.set_texture_rd_rid(result.vertex_texture.main_rid);
+            } else {
+                let mut tex = Texture2Drd::new_gd();
+                tex.set_texture_rd_rid(result.vertex_texture.main_rid);
+                self.vertex_position_texture = Some(tex);
+            }
+            self.vertex_position_texture_size = Vector2::new(
+                result.vertex_texture.extent.width as f32,
+                result.vertex_texture.extent.height as f32,
+            );
+        } else {
+            self.vertex_position_texture = None;
+            self.vertex_position_texture_size = Vector2::new(1.0, 1.0);
+        }
+
         // Apply scatter transforms to per-layer MultiMeshInstance3D children.
         // Missing result entries are treated as zero-instance slots so stale
         // MultiMesh counts are cleared instead of lingering on screen.
-        for (i, mmi_opt) in self.scatter_mmi_nodes.iter().enumerate() {
-            let Some(ref mmi) = mmi_opt else {
-                continue;
-            };
-            let Some(mut mm) = mmi.get_multimesh() else {
-                continue;
-            };
-            let instance_count = result.scatter_instance_counts.get(i).copied().unwrap_or(0) as i32;
-            if mm.get_instance_count() != instance_count {
-                mm.set_instance_count(instance_count);
+        {
+            let _g = crate::perf::ThreadScope::enter("apply_scatter_mm");
+            for (i, mmi_opt) in self.scatter_mmi_nodes.iter().enumerate() {
+                let Some(ref mmi) = mmi_opt else {
+                    continue;
+                };
+                let Some(mut mm) = mmi.get_multimesh() else {
+                    continue;
+                };
+                let instance_count =
+                    result.scatter_instance_counts.get(i).copied().unwrap_or(0) as i32;
+                if mm.get_instance_count() != instance_count {
+                    mm.set_instance_count(instance_count);
+                }
+                if instance_count == 0 {
+                    continue;
+                }
+                let Some(buf) = result.scatter_buffers.get(i) else {
+                    continue;
+                };
+                if buf.is_empty() {
+                    continue;
+                }
+                let packed = PackedFloat32Array::from(buf.as_slice());
+                let layer_label = format!("set_buffer_layer_{i}");
+                let _g2 = crate::perf::ThreadScope::enter(&layer_label);
+                mm.set_buffer(&packed);
             }
-            if instance_count == 0 {
-                continue;
-            }
-            let Some(buf) = result.scatter_buffers.get(i) else {
-                continue;
-            };
-            if buf.is_empty() {
-                continue;
-            }
-            let packed = PackedFloat32Array::from(buf.as_slice());
-            mm.set_buffer(&packed);
         }
 
         if !has_mesh {
-            return;
+            return worker_timing;
         }
+
+        // Detect the experimental vertex-texture branch. On this branch the
+        // worker no longer ships placeholder Vecs through `MeshResult`; it just
+        // reports `vertex_count` so the main thread can build (or reuse) the
+        // placeholder `ArrayMesh` itself.
+        let texture_branch =
+            self.experimental_vertex_position_texture_spike && result.vertex_texture.enabled;
+        let texture_vertex_count = result.vertex_texture.vertex_count;
 
         let MeshResult {
-            pos, triangles, uv, ..
+            pos,
+            triangles,
+            uv,
+            vertex_texture: _,
+            placeholder,
+            ..
         } = result;
-        let triangle_count = triangles.len() / 3;
+        let vertex_count = if texture_branch {
+            texture_vertex_count
+        } else {
+            u32::try_from(pos.len()).unwrap_or(u32::MAX)
+        };
+        let triangle_count = if texture_branch {
+            (vertex_count / 3) as usize
+        } else {
+            triangles.len() / 3
+        };
 
-        let packed_verts = PackedVector3Array::from(pos);
-        let packed_indices = PackedInt32Array::from(triangles);
-        let packed_uvs: PackedVector2Array = PackedVector2Array::from(uv);
+        // On the texture branch, the worker decides whether to ship a
+        // placeholder Vec (only when vertex_count changed). If shipped, we
+        // build the `ArrayMesh` from it; otherwise reuse the cached mesh.
+        let cached_count = self.placeholder_mesh_cache.as_ref().map(|(c, _)| *c);
+        let cache_hit = texture_branch
+            && placeholder.is_none()
+            && crate::vertex_texture_spike::placeholder_mesh_cache_hits(cached_count, vertex_count);
 
-        let mut surface_array = varray![];
-        surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
-        surface_array.set(ArrayType::VERTEX.ord() as usize, &packed_verts.to_variant());
-        surface_array.set(
-            ArrayType::INDEX.ord() as usize,
-            &packed_indices.to_variant(),
-        );
-        surface_array.set(ArrayType::TEX_UV.ord() as usize, &packed_uvs.to_variant());
+        let mut new_mesh: Gd<ArrayMesh> = if cache_hit {
+            let _g = crate::perf::ThreadScope::enter("consume_placeholder");
+            // Safe to unwrap: cache_hit implies the cache entry exists.
+            let (_, ref cached_mesh) = self
+                .placeholder_mesh_cache
+                .as_ref()
+                .expect("cache_hit implies populated cache");
+            cached_mesh.clone()
+        } else if texture_branch {
+            // Worker shipped a payload (vertex_count changed) — or the cache
+            // is unexpectedly empty. Either way, build the `ArrayMesh` from
+            // the worker-built Vec, falling back to a main-thread zero-fill
+            // if no payload arrived.
+            let positions = placeholder.unwrap_or_else(|| {
+                // Race fallback: worker decided "unchanged" but main-thread cache
+                // was cleared (e.g. spike toggled off and back on). Rebuild here.
+                let _g = crate::perf::ThreadScope::enter("build_placeholder_mesh_main");
+                vec![Vector3::ZERO; vertex_count as usize]
+            });
+            let packed_verts = {
+                let _g = crate::perf::ThreadScope::enter("pack_vertices");
+                PackedVector3Array::from(&positions[..])
+            };
 
-        let mut new_mesh = ArrayMesh::new_gd();
-        new_mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &surface_array);
+            let _g = crate::perf::ThreadScope::enter("add_surface_from_arrays");
+            let mut surface_array = varray![];
+            surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
+            surface_array.set(ArrayType::VERTEX.ord() as usize, &packed_verts.to_variant());
+
+            let mut new_mesh = ArrayMesh::new_gd();
+            new_mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &surface_array);
+            new_mesh
+        } else {
+            let packed_verts = {
+                let _g = crate::perf::ThreadScope::enter("pack_vertices");
+                PackedVector3Array::from(pos)
+            };
+            let packed_indices = {
+                let _g = crate::perf::ThreadScope::enter("pack_indices");
+                PackedInt32Array::from(triangles)
+            };
+            let packed_uvs: PackedVector2Array = {
+                let _g = crate::perf::ThreadScope::enter("pack_uvs");
+                PackedVector2Array::from(uv)
+            };
+
+            let _g = crate::perf::ThreadScope::enter("add_surface_from_arrays");
+            let mut surface_array = varray![];
+            surface_array.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
+            surface_array.set(ArrayType::VERTEX.ord() as usize, &packed_verts.to_variant());
+            surface_array.set(
+                ArrayType::INDEX.ord() as usize,
+                &packed_indices.to_variant(),
+            );
+            surface_array.set(ArrayType::TEX_UV.ord() as usize, &packed_uvs.to_variant());
+
+            let mut new_mesh = ArrayMesh::new_gd();
+            new_mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &surface_array);
+            new_mesh
+        };
 
         if let Some(ref shader) = self.active_shader {
-            let mut material = ShaderMaterial::new_gd();
-            material.set_shader(shader);
-            material.set_shader_parameter("radius", &self.radius.to_variant());
-            if let Some(ref cubemap) = self.cubemap_texture {
-                material.set_shader_parameter("planet_texture", &cubemap.to_variant());
-            }
-            if let Some(ref normal_cubemap) = self.normal_cubemap_texture {
-                material.set_shader_parameter("normal_cubemap", &normal_cubemap.to_variant());
-                material.set_shader_parameter("use_normal_cubemap", &true.to_variant());
+            let _g = crate::perf::ThreadScope::enter("material_setup");
+            // Build the `ShaderMaterial` lazily and reuse it across frames.
+            // On the spike path the heavy cost is `surface_set_material` (which
+            // we used to call every frame even on cache hit); reusing the
+            // material lets us skip that entirely once it's bound. Snapshot /
+            // LOD parameters that DO change per frame are still re-applied via
+            // `apply_lod_shader_params` below.
+            let needs_new_material = self.placeholder_material_cache.is_none() || !cache_hit;
+            if needs_new_material {
+                let mut material = self
+                    .placeholder_material_cache
+                    .clone()
+                    .unwrap_or_else(ShaderMaterial::new_gd);
+                material.set_shader(shader);
+                material.set_shader_parameter("radius", &self.radius.to_variant());
+                if let Some(ref cubemap) = self.cubemap_texture {
+                    material.set_shader_parameter("planet_texture", &cubemap.to_variant());
+                }
+                if let Some(ref normal_cubemap) = self.normal_cubemap_texture {
+                    material.set_shader_parameter("normal_cubemap", &normal_cubemap.to_variant());
+                    material.set_shader_parameter("use_normal_cubemap", &true.to_variant());
+                } else {
+                    material.set_shader_parameter("use_normal_cubemap", &false.to_variant());
+                }
+                {
+                    let _g2 = crate::perf::ThreadScope::enter("apply_lod_shader_params");
+                    self.apply_lod_shader_params(&mut material);
+                }
+                new_mesh.surface_set_material(0, &material);
+                self.placeholder_material_cache = Some(material);
             } else {
-                material.set_shader_parameter("use_normal_cubemap", &false.to_variant());
+                // Cache hit and we already have a material bound to this
+                // mesh — only re-apply the per-frame LOD parameters.
+                if let Some(ref mut material) = self.placeholder_material_cache {
+                    let _g2 = crate::perf::ThreadScope::enter("apply_lod_shader_params");
+                    let mut m = material.clone();
+                    self.apply_lod_shader_params(&mut m);
+                }
+            }
+        }
+
+        {
+            let _g = crate::perf::ThreadScope::enter("instance_set_base_and_free_old");
+            let mut rs = RenderingServer::singleton();
+
+            // Only rebind the instance base when the mesh RID actually changed.
+            let prev_rid = self.mesh.as_ref().map(|m| m.get_rid());
+            let new_rid = new_mesh.get_rid();
+            if prev_rid != Some(new_rid) {
+                rs.instance_set_base(self.instance, new_rid);
             }
 
-            // Apply LOD textures and metadata to the new material
-            self.apply_lod_shader_params(&mut material);
+            if self.experimental_vertex_position_texture_spike {
+                let r = self.radius * 1.5;
+                let aabb = Aabb {
+                    position: Vector3::new(-r, -r, -r),
+                    size: Vector3::new(2.0 * r, 2.0 * r, 2.0 * r),
+                };
+                rs.instance_set_custom_aabb(self.instance, aabb);
+            }
 
-            new_mesh.surface_set_material(0, &material);
+            // Free the previously-bound mesh only when it isn't the cached
+            // mesh we're about to reuse. Without this guard the cache hit
+            // path would free its own RID.
+            if !cache_hit {
+                if let Some(ref old_mesh) = self.mesh {
+                    if old_mesh.get_rid() != new_rid {
+                        rs.free_rid(old_mesh.get_rid());
+                    }
+                }
+            }
+            self.mesh = Some(new_mesh.clone());
+
+            // Populate / refresh the placeholder cache after a miss on the
+            // texture branch so the next frame can hit. On the legacy path
+            // (texture_branch == false) we do not cache — that path needs a
+            // fresh mesh built from real positions every frame.
+            if texture_branch && !cache_hit {
+                self.placeholder_mesh_cache = Some((vertex_count, new_mesh));
+            } else if !texture_branch {
+                // Spike flag flipped off (or worker didn't produce a vertex
+                // texture this frame): drop the cache so it doesn't alias the
+                // legacy mesh and so the next spike-on frame rebuilds.
+                self.placeholder_mesh_cache = None;
+                self.placeholder_material_cache = None;
+            }
         }
-
-        let mut rs = RenderingServer::singleton();
-        rs.instance_set_base(self.instance, new_mesh.get_rid());
-
-        if let Some(ref old_mesh) = self.mesh {
-            rs.free_rid(old_mesh.get_rid());
-        }
-        self.mesh = Some(new_mesh);
 
         if self.show_debug_messages {
             godot_print!("Mesh Triangles: {}", triangle_count);
         }
 
-        if self.generate_collision {
-            self.update_collision();
-        }
+        worker_timing
     }
 
     /// Re-read `CesScatterMaskTextureLayer` params from the live GD resources
@@ -1587,15 +2104,21 @@ impl CesCelestialRust {
             let noise_v = layer_gd.get("noise_strength");
             let color_v = layer_gd.get("target_color");
             let tol_v = layer_gd.get("color_tolerance");
-            self.scatter_mask_noise_strength =
-                if noise_v.is_nil() { 1.0 } else { noise_v.to::<f32>() };
+            self.scatter_mask_noise_strength = if noise_v.is_nil() {
+                1.0
+            } else {
+                noise_v.to::<f32>()
+            };
             self.scatter_mask_target_color = if color_v.is_nil() {
                 Color::from_rgba(0.2, 0.6, 0.2, 1.0)
             } else {
                 color_v.to::<Color>()
             };
-            self.scatter_mask_color_tolerance =
-                if tol_v.is_nil() { 0.3 } else { tol_v.to::<f32>() };
+            self.scatter_mask_color_tolerance = if tol_v.is_nil() {
+                0.3
+            } else {
+                tol_v.to::<f32>()
+            };
         }
     }
 
@@ -1650,6 +2173,22 @@ impl CesCelestialRust {
                 &angular_extent.to_variant(),
             );
         }
+        let use_vertex_position_texture = should_enable_vertex_position_texture_material(
+            self.experimental_vertex_position_texture_spike,
+            self.vertex_position_texture.is_some(),
+        );
+        material.set_shader_parameter(
+            "use_vertex_position_texture",
+            &use_vertex_position_texture.to_variant(),
+        );
+        material.set_shader_parameter(
+            "vertex_position_texture_size",
+            &self.vertex_position_texture_size.to_variant(),
+        );
+        if let Some(ref vertex_texture) = self.vertex_position_texture {
+            material.set_shader_parameter("vertex_position_texture", &vertex_texture.to_variant());
+        }
+
         // Scatter mask preview uniforms — silently ignored by other shaders.
         if let Some(ref tex3d) = self.blue_noise_texture {
             material.set_shader_parameter("blue_noise_texture", &tex3d.to_variant());
@@ -1658,28 +2197,11 @@ impl CesCelestialRust {
             "noise_strength",
             &self.scatter_mask_noise_strength.to_variant(),
         );
-        material.set_shader_parameter(
-            "target_color",
-            &self.scatter_mask_target_color.to_variant(),
-        );
+        material.set_shader_parameter("target_color", &self.scatter_mask_target_color.to_variant());
         material.set_shader_parameter(
             "color_tolerance",
             &self.scatter_mask_color_tolerance.to_variant(),
         );
-    }
-
-    fn add_subnodes(&mut self) {
-        // StaticBody3D with CollisionShape3D
-        let mut static_body = StaticBody3D::new_alloc();
-        static_body.set_name("StaticBody3D");
-
-        let mut collision_shape = CollisionShape3D::new_alloc();
-        collision_shape.set_name("CollisionShape3D");
-        let shape = ConcavePolygonShape3D::new_gd();
-        collision_shape.set_shape(&shape);
-
-        static_body.add_child(&collision_shape);
-        self.base_mut().add_child(&static_body);
     }
 
     /// Spawns the persistent worker thread. The worker owns the RenderingDevice,
@@ -1711,7 +2233,9 @@ impl CesCelestialRust {
             normal_texture_gen,
             terrain_params,
             snapshot_chain,
+            position_texture: SharedPositionTexture::new(),
             scatter_runtimes,
+            last_placeholder_vertex_count: None,
         };
 
         let handle = std::thread::spawn(move || {
@@ -1766,6 +2290,10 @@ impl CesCelestialRust {
             }
 
             while let Ok((cam_local, config)) = work_rx.recv() {
+                worker
+                    .snapshot_chain
+                    .set_minimum_update_interval_ms(config.minimum_lod_update_time_ms);
+
                 // Drain all pending commands — coalesce multiple ParamsChanged into one
                 let mut last_params: Option<(TerrainParams, f32)> = None;
                 while let Ok(cmd) = texture_cmd_rx.try_recv() {
@@ -1878,22 +2406,77 @@ impl CesCelestialRust {
                     precise_normals: config.precise_normals,
                     low_poly_look: config.low_poly_look,
                     show_debug_messages: config.show_debug_messages,
+                    show_debug_lod_histogram: config.show_debug_lod_histogram,
                 };
 
                 if worker.graph_generator.is_none() {
                     worker.graph_generator = Some(CesRunAlgo::new());
                 }
 
-                let gen = worker.graph_generator.as_mut().unwrap();
-                let output = gen.update_triangle_graph(
-                    &mut worker.rd,
-                    cam_local,
-                    &algo_config,
-                    &mut worker.layers,
-                    false,
-                );
+                // Per-frame timing tree on the worker thread. When debug
+                // messages are off, the tree is `disabled()` so all scope
+                // construction becomes a no-op.
+                let mut worker_tree = if config.show_debug_messages {
+                    crate::perf::TimingTree::new()
+                } else {
+                    crate::perf::TimingTree::disabled()
+                };
 
-                if output.pos.is_empty() || output.tris.is_empty() {
+                // Install the tree as this thread's current tree for the
+                // remainder of this iteration. The guard restores the previous
+                // pointer on Drop, so the tree stays "active" for both the algo
+                // and the scatter dispatches that follow.
+                let _tree_guard = crate::perf::install_thread_tree(&mut worker_tree);
+                let _frame_scope = crate::perf::ThreadScope::enter("worker_frame");
+
+                let (cpu_output, texture_output) = {
+                    let WorkerState {
+                        ref mut rd,
+                        ref mut graph_generator,
+                        ref mut layers,
+                        ref mut position_texture,
+                        ..
+                    } = worker;
+                    let gen = graph_generator.as_mut().unwrap();
+                    if config.experimental_vertex_position_texture_spike {
+                        (
+                            None,
+                            Some(gen.update_triangle_graph_to_position_texture(
+                                rd,
+                                cam_local,
+                                &algo_config,
+                                layers,
+                                false,
+                                position_texture,
+                                config.debug_return_early_from_process,
+                            )),
+                        )
+                    } else {
+                        (
+                            Some(gen.update_triangle_graph(
+                                rd,
+                                cam_local,
+                                &algo_config,
+                                layers,
+                                false,
+                            )),
+                            None,
+                        )
+                    }
+                };
+
+                let has_final_mesh = if let Some(ref output) = cpu_output {
+                    !output.pos.is_empty() && !output.tris.is_empty()
+                } else {
+                    texture_output
+                        .as_ref()
+                        .map(|output| !output.is_empty())
+                        .unwrap_or(false)
+                };
+
+                if !has_final_mesh {
+                    drop(_frame_scope);
+                    drop(_tree_guard);
                     let _ = result_tx.send(MeshResult {
                         pos: vec![],
                         triangles: vec![],
@@ -1904,10 +2487,16 @@ impl CesCelestialRust {
                         snapshot_updated: false,
                         scatter_buffers: vec![],
                         scatter_instance_counts: vec![],
+                        timing: if config.show_debug_messages {
+                            Some(worker_tree)
+                        } else {
+                            None
+                        },
+                        vertex_texture: VertexTextureBinding::disabled(),
+                        placeholder: None,
                     });
                     continue;
                 }
-
                 // Generate camera snapshots after mesh algo (coupled to mesh update)
                 let snapshot_updated = if worker.snapshot_chain.has_textures() {
                     // Apply show_borders setting
@@ -1989,7 +2578,8 @@ impl CesCelestialRust {
                     if let Some(state) = state_opt {
                         if state.n_tris > 0 {
                             // Debug: print distribution of LOD levels in current state.
-                            if config.show_debug_messages {
+                            // Gated on a separate flag because the readbacks pollute timing.
+                            if config.show_debug_lod_histogram {
                                 let levels = state.get_level(rd);
                                 let deactivated = state.get_t_deactivated_mask(rd);
                                 let mut hist = std::collections::BTreeMap::<i32, u32>::new();
@@ -2003,6 +2593,7 @@ impl CesCelestialRust {
                                     hist
                                 );
                             }
+                            let _scatter_root = crate::perf::ThreadScope::enter("scatter");
                             for (slot, runtime) in scatter_runtimes.iter_mut().enumerate() {
                                 let layer_params = config
                                     .scatter_params
@@ -2014,10 +2605,24 @@ impl CesCelestialRust {
                                     config.radius,
                                 );
                                 runtime.set_params(params);
+                                runtime.set_force_shrink_each_dispatch(
+                                    config.scatter_force_shrink_each_dispatch,
+                                );
                                 runtime.init_pipeline(rd);
-                                runtime.dispatch(rd, &tp_for_scatter, state);
-                                let count = runtime.readback_count(rd);
-                                scatter_buffers[slot] = runtime.readback_compact(rd, count);
+                                let layer_label = format!("layer_{slot}");
+                                let _layer_scope = crate::perf::ThreadScope::enter(&layer_label);
+                                {
+                                    let _g = crate::perf::ThreadScope::enter("dispatch");
+                                    runtime.dispatch(rd, &tp_for_scatter, state);
+                                }
+                                let count = {
+                                    let _g = crate::perf::ThreadScope::enter("readback_count");
+                                    runtime.readback_count(rd)
+                                };
+                                {
+                                    let _g = crate::perf::ThreadScope::enter("readback_compact");
+                                    scatter_buffers[slot] = runtime.readback_compact(rd, count);
+                                }
                                 scatter_instance_counts[slot] = count;
                                 if config.show_debug_messages {
                                     godot_print!(
@@ -2033,16 +2638,89 @@ impl CesCelestialRust {
                     }
                 }
 
+                let (mesh_pos, mesh_triangles, mesh_uv) = if let Some(output) = cpu_output {
+                    (output.pos, output.tris, output.uv)
+                } else {
+                    (vec![], vec![], vec![])
+                };
+                let mut vertex_texture = VertexTextureBinding::disabled();
+
+                if let Some(texture_output) = texture_output {
+                    let _vertex_texture_scope =
+                        crate::perf::ThreadScope::enter("vertex_texture_final_output");
+                    let extent = worker.position_texture.extent();
+                    vertex_texture = VertexTextureBinding {
+                        main_rid: worker.position_texture.back_main_rid(),
+                        extent,
+                        enabled: true,
+                        vertex_count: texture_output.vertex_count(),
+                    };
+                    worker.position_texture.swap_buffers();
+                    if config.show_debug_messages {
+                        godot_print!(
+                            "[CesCelestialRust] Experimental vertex texture final-state path updated ({} verts, {}x{})",
+                            texture_output.vertex_count(),
+                            extent.width,
+                            extent.height
+                        );
+                    }
+                }
+
+                // Texture branch only: build the zero-fill placeholder Vec on the
+                // worker when vertex_count changed since the last frame we shipped
+                // one. Main thread owns the Vec→PackedVector3Array copy.
+                let placeholder = if vertex_texture.enabled {
+                    let vc = vertex_texture.vertex_count;
+                    if crate::vertex_texture_spike::should_build_placeholder(
+                        worker.last_placeholder_vertex_count,
+                        vc,
+                    ) {
+                        let _g = crate::perf::ThreadScope::enter("build_placeholder_worker");
+                        let positions = vec![Vector3::ZERO; vc as usize];
+                        worker.last_placeholder_vertex_count = Some(vc);
+                        Some(positions)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Tear down the frame scope and the thread-tree pointer BEFORE
+                // we move `worker_tree` into `MeshResult` (their Drop impls
+                // would otherwise dereference a moved-out value).
+                drop(_frame_scope);
+                drop(_tree_guard);
+
+                // Drain render-thread wall-time samples and fold them into the
+                // timing tree's `gpu_ms` column. This intentionally replaces
+                // the old GPU-timestamp path so the tree now reports the full
+                // render-thread cost (including submit/sync/free work) that
+                // actually blocks progress in practice.
+                if config.show_debug_messages {
+                    let render_thread_samples = crate::compute_utils::drain_render_thread_timings();
+                    for (path, dur) in render_thread_samples {
+                        worker_tree.add_gpu_ns(&path, dur);
+                    }
+                }
+
                 let result = MeshResult {
-                    pos: output.pos,
-                    triangles: output.tris,
-                    uv: output.uv,
+                    pos: mesh_pos,
+                    triangles: mesh_triangles,
+                    uv: mesh_uv,
                     snapshot_main_rids,
                     snapshot_normal_main_rids,
                     snapshot_level_info,
                     snapshot_updated,
                     scatter_buffers,
                     scatter_instance_counts,
+                    timing: if config.show_debug_messages {
+                        Some(worker_tree)
+                    } else {
+                        None
+                    },
+                    vertex_texture,
+                    placeholder,
                 };
 
                 if result_tx.send(result).is_err() {
@@ -2087,18 +2765,6 @@ impl CesCelestialRust {
         None
     }
 
-    fn update_collision(&mut self) {
-        if let Some(mesh) = self.mesh.as_ref() {
-            let shape = mesh.create_trimesh_shape();
-            if let Some(shape) = shape {
-                let mut collision = self
-                    .base()
-                    .get_node_as::<CollisionShape3D>("StaticBody3D/CollisionShape3D");
-                collision.set_shape(&shape);
-            }
-        }
-    }
-
     /// Build a `Vec<CesScatterRuntime>` sized and ordered to match the
     /// currently-enabled scatter layers. Runtimes are created without any GPU
     /// pipeline/buffer work yet — that happens on the worker thread.
@@ -2134,6 +2800,7 @@ impl CesCelestialRust {
                 read_scatter_layer_params(&layer_gd),
                 self.radius,
             ));
+            runtime.set_force_shrink_each_dispatch(self.scatter_force_shrink_each_dispatch);
             if !self.blue_noise_bytes.is_empty() {
                 runtime.set_blue_noise(self.blue_noise_bytes.clone(), noise_dim);
             }
@@ -2267,6 +2934,7 @@ impl CesCelestialRust {
 #[cfg(test)]
 mod tests {
     use crate::algo::run_algo::RunAlgoConfig;
+    use godot::prelude::Rid;
 
     #[test]
     fn test_default_config() {
@@ -2277,6 +2945,7 @@ mod tests {
             precise_normals: true,
             low_poly_look: false,
             show_debug_messages: false,
+            show_debug_lod_histogram: false,
         };
         assert_eq!(config.subdivisions, 3);
         assert!((config.radius - 1.0).abs() < f32::EPSILON);
@@ -2352,6 +3021,35 @@ mod tests {
         );
         assert_eq!(super::count_enabled_flags(&[false, false, false]), 0);
         assert_eq!(super::count_enabled_flags(&[true, true, true]), 3);
+    }
+
+    #[test]
+    fn vertex_texture_material_contract_requires_feature_flag_and_texture() {
+        assert!(super::should_enable_vertex_position_texture_material(
+            true, true
+        ));
+        assert!(!super::should_enable_vertex_position_texture_material(
+            true, false
+        ));
+        assert!(!super::should_enable_vertex_position_texture_material(
+            false, true
+        ));
+        assert!(!super::should_enable_vertex_position_texture_material(
+            false, false
+        ));
+    }
+
+    #[test]
+    fn disabled_vertex_texture_binding_defaults_to_safe_material_state() {
+        let binding = super::VertexTextureBinding::disabled();
+        assert!(!binding.enabled);
+        assert_eq!(binding.main_rid, Rid::Invalid);
+        assert_eq!(binding.extent.width, 1);
+        assert_eq!(binding.extent.height, 1);
+        assert!(!super::should_enable_vertex_position_texture_material(
+            true,
+            binding.main_rid.is_valid(),
+        ));
     }
 
     #[test]

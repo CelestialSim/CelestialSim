@@ -85,6 +85,8 @@ float calculateScreenAreaSimplified(int triIdx)
 // This is a simplified approximation that avoids full vertex projection
 float calculateScreenArea(int triIdx)
 {
+    const int SCREEN_AREA_MULTIPLIER = 10;
+
     // Get triangle level
     uint level = t_lv[triIdx];
 
@@ -115,7 +117,7 @@ float calculateScreenArea(int triIdx)
     float screenScale = 1.0f / (dist * tan_half_fov);
     float screenArea = triangleArea * screenScale * screenScale;
 
-    return screenArea;
+    return screenArea * SCREEN_AREA_MULTIPLIER;
 }
 
 

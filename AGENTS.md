@@ -65,7 +65,7 @@ Build after a feature is implemented or a bug is fixed.
 Do not use the task but use the command:
 
 ```
-dotnet build
+cargo build --release --manifest-path rust/Cargo.toml
 ```
 
 ## Skills

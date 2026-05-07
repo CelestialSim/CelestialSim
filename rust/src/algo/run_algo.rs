@@ -2,7 +2,6 @@ use godot::builtin::Vector3;
 use godot::classes::RenderingDevice;
 use godot::obj::Gd;
 use godot::prelude::godot_print;
-use std::time::{Duration, Instant};
 
 use crate::algo::compact_buffers::CompactShaders;
 use crate::algo::div_lod::DivShader;
@@ -12,6 +11,8 @@ use crate::algo::merge_lod::MergeShader;
 use crate::algo::update_neighbors::UpdateNeighborsShader;
 use crate::initial_state;
 use crate::layers::CesLayer;
+use crate::perf::ThreadScope;
+use crate::shared_texture::SharedPositionTexture;
 use crate::state::CesState;
 
 /// Configuration for the subdivision algorithm.
@@ -22,82 +23,7 @@ pub struct RunAlgoConfig {
     pub precise_normals: bool,
     pub low_poly_look: bool,
     pub show_debug_messages: bool,
-}
-
-struct AlgoTimingTotals {
-    total: Duration,
-    mark: Duration,
-    divide: Duration,
-    merge: Duration,
-    compact: Duration,
-    neighbors: Duration,
-    layers: Duration,
-    final_output: Duration,
-    iterations: u32,
-}
-
-impl AlgoTimingTotals {
-    fn print_summary(&self) {
-        godot_print!(
-            "AlgoTiming summary: iterations={} total={:.3} ms",
-            self.iterations,
-            self.total.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step MarkTrisToDivide: {:.3} ms",
-            self.mark.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step Divide: {:.3} ms",
-            self.divide.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step Merge: {:.3} ms",
-            self.merge.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step Compact: {:.3} ms",
-            self.compact.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step UpdateNeighbors: {:.3} ms",
-            self.neighbors.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step LayersUpdate: {:.3} ms",
-            self.layers.as_secs_f64() * 1000.0
-        );
-        godot_print!(
-            "AlgoTiming step FinalOutput: {:.3} ms",
-            self.final_output.as_secs_f64() * 1000.0
-        );
-
-        let mut slowest = ("MarkTrisToDivide", self.mark);
-        if self.divide > slowest.1 {
-            slowest = ("Divide", self.divide);
-        }
-        if self.merge > slowest.1 {
-            slowest = ("Merge", self.merge);
-        }
-        if self.compact > slowest.1 {
-            slowest = ("Compact", self.compact);
-        }
-        if self.neighbors > slowest.1 {
-            slowest = ("UpdateNeighbors", self.neighbors);
-        }
-        if self.layers > slowest.1 {
-            slowest = ("LayersUpdate", self.layers);
-        }
-        if self.final_output > slowest.1 {
-            slowest = ("FinalOutput", self.final_output);
-        }
-
-        godot_print!(
-            "AlgoTiming slowest: {} ({:.3} ms)",
-            slowest.0,
-            slowest.1.as_secs_f64() * 1000.0
-        );
-    }
+    pub show_debug_lod_histogram: bool,
 }
 
 /// Orchestrates the adaptive LOD subdivision loop.
@@ -143,28 +69,15 @@ impl CesRunAlgo {
         }
     }
 
-    /// Runs the main subdivision loop until convergence.
-    /// Mirrors C# `CesRunAlgo.UpdateTriangleGraph`.
-    pub fn update_triangle_graph(
+    fn run_triangle_graph_updates(
         &mut self,
         rd: &mut Gd<RenderingDevice>,
         cam_local: Vector3,
         config: &RunAlgoConfig,
         layers: &mut [Box<dyn CesLayer>],
         skip_auto_division_marking: bool,
-    ) -> final_state::FinalOutput {
-        let total_start = Instant::now();
-        let mut timings = AlgoTimingTotals {
-            total: Duration::ZERO,
-            mark: Duration::ZERO,
-            divide: Duration::ZERO,
-            merge: Duration::ZERO,
-            compact: Duration::ZERO,
-            neighbors: Duration::ZERO,
-            layers: Duration::ZERO,
-            final_output: Duration::ZERO,
-            iterations: 0,
-        };
+    ) {
+        let _algo_scope = ThreadScope::enter("update_triangle_graph");
 
         if self.state.is_none() {
             self.state = Some(initial_state::create_core_state(rd));
@@ -188,12 +101,11 @@ impl CesRunAlgo {
 
         while n_tris_added > 0 || n_tris_merged > 0 || first_run {
             first_run = false;
-            timings.iterations += 1;
 
             let n_to_divide;
             let n_to_merge;
             if !skip_auto_division_marking {
-                let mark_start = Instant::now();
+                let _g = ThreadScope::enter("mark_tris");
                 let mark_counts = self
                     .mark_tris_shader
                     .as_ref()
@@ -210,7 +122,6 @@ impl CesRunAlgo {
                 n_to_merge = mark_counts.n_to_merge;
                 state.n_divided = mark_counts.n_divided;
                 state.n_deactivated_tris = mark_counts.n_deactivated;
-                timings.mark += mark_start.elapsed();
             } else {
                 // When marking is skipped (test/manual paths), count from the GPU mask
                 let mask = state.get_t_to_divide_mask(rd);
@@ -219,14 +130,15 @@ impl CesRunAlgo {
                 n_to_merge = state.n_tris;
             }
 
-            let divide_start = Instant::now();
-            n_tris_added = self.div_shader.as_ref().unwrap().make_div(
-                rd,
-                state,
-                config.precise_normals,
-                n_to_divide,
-            );
-            timings.divide += divide_start.elapsed();
+            {
+                let _g = ThreadScope::enter("div_lod");
+                n_tris_added = self.div_shader.as_ref().unwrap().make_div(
+                    rd,
+                    state,
+                    config.precise_normals,
+                    n_to_divide,
+                );
+            }
             if n_tris_added > 0 {
                 state.sync_n_tris_buffer(rd);
                 state.sync_n_verts_buffer(rd);
@@ -235,13 +147,14 @@ impl CesRunAlgo {
                 }
             }
 
-            let merge_start = Instant::now();
-            n_tris_merged = self
-                .merge_shader
-                .as_ref()
-                .unwrap()
-                .make_merge(rd, state, n_to_merge);
-            timings.merge += merge_start.elapsed();
+            {
+                let _g = ThreadScope::enter("merge_lod");
+                n_tris_merged = self
+                    .merge_shader
+                    .as_ref()
+                    .unwrap()
+                    .make_merge(rd, state, n_to_merge);
+            }
             if n_tris_merged > 0 && config.show_debug_messages {
                 godot_print!(
                     "Merged {} triangle(s) (removed {} child triangles)",
@@ -254,38 +167,89 @@ impl CesRunAlgo {
                 if config.show_debug_messages {
                     godot_print!("Removing free space inside buffers");
                 }
-                let compact_start = Instant::now();
+                let _g = ThreadScope::enter("compact_buffers");
                 self.compact_shaders.as_ref().unwrap().compact(rd, state);
-                timings.compact += compact_start.elapsed();
             }
 
             if n_tris_added > 0 || n_tris_merged > 0 {
-                let neighbors_start = Instant::now();
+                let _g = ThreadScope::enter("update_neighbors");
                 self.update_neighbors_shader
                     .as_ref()
                     .unwrap()
                     .update_neighbors(rd, state);
-                timings.neighbors += neighbors_start.elapsed();
             }
 
-            let layers_start = Instant::now();
-            Self::layers_update(rd, state, layers, config.radius);
-            timings.layers += layers_start.elapsed();
+            {
+                let _g = ThreadScope::enter("layers_update");
+                Self::layers_update(rd, state, layers, config.radius);
+            }
         }
 
-        let final_start = Instant::now();
-        let final_output = final_state::create_final_output(
-            rd,
-            state,
-            config.low_poly_look,
-            self.final_state_shader.as_ref().unwrap(),
-        );
-        timings.final_output += final_start.elapsed();
-
-        timings.total = total_start.elapsed();
-        if config.show_debug_messages {
-            timings.print_summary();
+        // Final compaction pass: when the LOD loop converges after a big
+        // level-down (e.g. swapping from level 8 to level 6), it's typical
+        // for tens of thousands of deactivated triangles to remain — below
+        // the in-loop 100k threshold but enough to inflate `state.n_tris`,
+        // which in turn inflates the dispatch size of mark_tris/final_state
+        // every subsequent frame. Compacting once after the loop drives
+        // `state.n_tris` back down to the active set so steady-state cost
+        // matches the fresh-init cost.
+        if state.n_deactivated_tris > 0 {
+            let _g = ThreadScope::enter("compact_buffers");
+            self.compact_shaders.as_ref().unwrap().compact(rd, state);
         }
+    }
+
+    /// Runs the main subdivision loop until convergence and reads the final
+    /// vertex payload back to the CPU.
+    /// Mirrors C# `CesRunAlgo.UpdateTriangleGraph`.
+    pub fn update_triangle_graph(
+        &mut self,
+        rd: &mut Gd<RenderingDevice>,
+        cam_local: Vector3,
+        config: &RunAlgoConfig,
+        layers: &mut [Box<dyn CesLayer>],
+        skip_auto_division_marking: bool,
+    ) -> final_state::FinalOutput {
+        self.run_triangle_graph_updates(rd, cam_local, config, layers, skip_auto_division_marking);
+
+        let final_output = {
+            let _g = ThreadScope::enter("final_state");
+            final_state::create_final_output(
+                rd,
+                self.state.as_ref().unwrap(),
+                config.low_poly_look,
+                self.final_state_shader.as_ref().unwrap(),
+            )
+        };
+
+        final_output
+    }
+
+    /// Runs the main subdivision loop until convergence and writes the final
+    /// positions straight into the shared vertex-position texture.
+    pub fn update_triangle_graph_to_position_texture(
+        &mut self,
+        rd: &mut Gd<RenderingDevice>,
+        cam_local: Vector3,
+        config: &RunAlgoConfig,
+        layers: &mut [Box<dyn CesLayer>],
+        skip_auto_division_marking: bool,
+        position_texture: &mut SharedPositionTexture,
+        early_exit: bool
+    ) -> final_state::FinalTextureOutput {
+
+        self.run_triangle_graph_updates(rd, cam_local, config, layers, skip_auto_division_marking);
+        
+        let final_output = {
+            let _g = ThreadScope::enter("final_state");
+            final_state::create_final_output_to_shared_position_texture(
+                rd,
+                self.state.as_ref().unwrap(),
+                self.final_state_shader.as_ref().unwrap(),
+                position_texture,
+                early_exit
+            )
+        };
 
         final_output
     }
@@ -339,6 +303,7 @@ mod tests {
             precise_normals: false,
             low_poly_look: false,
             show_debug_messages: false,
+            show_debug_lod_histogram: false,
         };
         assert_eq!(config.subdivisions, 3);
         assert_eq!(config.radius, 1.0);

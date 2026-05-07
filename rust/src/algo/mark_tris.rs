@@ -79,7 +79,8 @@ impl MarkTrisShader {
         ];
 
         let workgroups = (state.n_tris + 255) / 256;
-        self.pipeline.dispatch(rd, &buffers, workgroups);
+        self.pipeline
+            .dispatch(rd, &buffers, workgroups, "mark_tris");
 
         // Read back the 4-uint counter buffer
         let counts: Vec<u32> = compute_utils::convert_buffer_to_vec(rd, &self.counter);

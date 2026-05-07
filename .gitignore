@@ -22,3 +22,4 @@ CelestialSim.sln.DotSettings.user
 site/
 
 .repowise/
+rust/src/target/analyzer/

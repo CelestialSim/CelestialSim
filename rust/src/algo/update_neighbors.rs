@@ -40,6 +40,7 @@ impl UpdateNeighborsShader {
             &state.u_n_tris,    // 12
         ];
 
-        self.pipeline.dispatch(rd, &buffers, state.n_tris);
+        self.pipeline
+            .dispatch(rd, &buffers, state.n_tris, "update_neighbors");
     }
 }

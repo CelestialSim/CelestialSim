@@ -26,10 +26,9 @@ fn project_root() -> PathBuf {
 fn main() {
     let [w, h, d] = SIZE;
     let seed = blue_noise::DEFAULT_SEED;
-    let path = project_root().join(".cache").join(format!(
-        "blue_noise_{}x{}x{}_seed{:#x}.bin",
-        w, h, d, seed
-    ));
+    let path = project_root()
+        .join(".cache")
+        .join(format!("blue_noise_{}x{}x{}_seed{:#x}.bin", w, h, d, seed));
 
     println!("Output: {}", path.display());
     let t0 = Instant::now();

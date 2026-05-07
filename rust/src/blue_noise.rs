@@ -319,7 +319,11 @@ fn gaussian_freq_kernel(dims: [usize; 3], sigma: f32) -> Vec<f32> {
     let mut k = vec![0.0f32; nx * ny * nz];
     let coeff = -0.5 * (2.0 * std::f32::consts::PI * sigma).powi(2);
     let freq = |k: usize, n: usize| -> f32 {
-        let kk = if k * 2 <= n { k as i64 } else { k as i64 - n as i64 };
+        let kk = if k * 2 <= n {
+            k as i64
+        } else {
+            k as i64 - n as i64
+        };
         kk as f32 / n as f32
     };
     for kxi in 0..nx {

@@ -1,7 +1,7 @@
 # CelestialSim Documentation
 
 !!! warning "Draft documentation"
-    This documentation is still in progress and missing key pages/sections.
+	This documentation is still in progress and missing key pages/sections.
 
 CelestialSim is a Godot plugin for rendering planetary and celestial bodies with adaptive LOD terrain.
 

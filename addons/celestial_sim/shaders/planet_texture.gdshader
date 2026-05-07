@@ -4,6 +4,12 @@ uniform samplerCube planet_texture : source_color;
 uniform samplerCube normal_cubemap : hint_default_black;
 uniform bool use_normal_cubemap = true;
 
+// Optional final-vertex position texture. When enabled, `VERTEX_ID` indexes a
+// shared float texture written by the worker/local RD and sampled on the main RD.
+uniform sampler2D vertex_position_texture : hint_default_black, filter_nearest, repeat_disable;
+uniform vec2 vertex_position_texture_size = vec2(1.0, 1.0);
+uniform bool use_vertex_position_texture = false;
+
 // snapshot patch textures (up to 4 levels) — color
 uniform sampler2D snapshot1_texture : source_color;
 uniform sampler2D snapshot2_texture : source_color;
@@ -42,7 +48,19 @@ uniform float snapshot4_angular_extent = 0.0982;
 
 varying vec3 model_position;
 
+vec3 fetch_vertex_position_from_texture(int vertex_id) {
+    int width = max(int(vertex_position_texture_size.x), 1);
+    int height = max(int(vertex_position_texture_size.y), 1);
+    int x = vertex_id % width;
+    int y = min(vertex_id / width, height - 1);
+    vec2 uv = (vec2(float(x) + 0.5, float(y) + 0.5)) / vertex_position_texture_size;
+    return textureLod(vertex_position_texture, uv, 0.0).xyz;
+}
+
 void vertex() {
+    if (use_vertex_position_texture) {
+        VERTEX = fetch_vertex_position_from_texture(VERTEX_ID);
+    }
     model_position = VERTEX;
 }
 

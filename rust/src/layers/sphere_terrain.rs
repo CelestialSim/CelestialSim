@@ -45,7 +45,7 @@ impl CesLayer for CesSphereTerrain {
             &state.u_n_verts,     // 3
         ];
 
-        pipeline.dispatch(rd, &buffers, state.n_verts);
+        pipeline.dispatch(rd, &buffers, state.n_verts, "sphere_terrain");
 
         compute_utils::free_rid_on_render_thread(rd, radius_buf.rid);
     }
