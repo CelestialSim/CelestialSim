@@ -10,8 +10,9 @@ shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
 
 [sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_t1"]
 script = ExtResource("1_terrain")
-resolution = 4000
-max_snapshot_levels = 2
+resolution = 200
+max_snapshot_levels = 4
+show_snapshot_borders = false
 height_tiles = 13.093
 height_octaves = 5
 erosion_octaves = 6
@@ -70,9 +71,11 @@ metadata/_custom_type_script = "uid://bv4fa87d46ljf"
 [node name="Planet" type="CesCelestialRust" parent="." unique_id=494222983]
 radius = 300.0
 subdivisions = 16
+triangle_screen_size = 0.01
 low_poly_look = false
 scatter_force_shrink_each_dispatch = true
-minimum_lod_update_time_ms = 1000
+minimum_lod_update_time_ms = 0
+experimental_vertex_position_texture_spike = true
 height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_h1")])
 texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1"), SubResource("CesTextureLayerResource_jleck"), SubResource("CesTextureLayerResource_7xawd")])
 scatter_layers = Array[CesScatterLayerResource]([SubResource("CesScatterLayerResource_7xawd"), SubResource("CesScatterLayerResource_wnqpw")])
