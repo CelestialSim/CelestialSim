@@ -160,8 +160,15 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     float displacement = (height - 0.5) * 2.4 * scatter_params.planet_radius * 0.25;
     float3 world_pos = dir * (scatter_params.planet_radius + displacement);
 
-    // Random yaw per triangle.
-    float yaw = hash3(float3(float(tri_idx), float(scatter_params.seed), 0.0)).z * SCATTER_PI;
+    // Random yaw seeded by the triangle's centroid *direction*, not by the
+    // buffer index. The CompactTris pass reshuffles `tri_idx` whenever a
+    // divide/merge fires, so an index-based hash makes every scatter instance
+    // rotate simultaneously after each LOD update (visible as a rare flicker
+    // when the camera crosses a subdivision threshold). Hashing the centroid
+    // direction makes the yaw a spatial property: the same physical triangle
+    // gets the same yaw regardless of its current buffer position, and a
+    // re-merged parent recovers its pre-subdivision orientation.
+    float yaw = hash3(dir * 137.0 + float(scatter_params.seed)).z * SCATTER_PI;
     float cy = cos(yaw);
     float sy = sin(yaw);
 
