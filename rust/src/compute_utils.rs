@@ -4,13 +4,49 @@ use godot::classes::{RenderingDevice, RenderingServer};
 use godot::obj::{Gd, NewGd, Singleton};
 use godot::prelude::{load, Array, Rid};
 
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use crate::buffer_info::BufferInfo;
 
 // ---------------------------------------------------------------------------
 // Render-thread dispatch helpers (mirrors C# CallOnRenderThread pattern)
 // ---------------------------------------------------------------------------
+
+static RENDER_THREAD_TIMINGS: OnceLock<Mutex<Vec<(String, u64)>>> = OnceLock::new();
+
+fn render_thread_timings() -> &'static Mutex<Vec<(String, u64)>> {
+    RENDER_THREAD_TIMINGS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn push_render_thread_timing(path: String, elapsed_ns: u64) {
+    render_thread_timings()
+        .lock()
+        .unwrap()
+        .push((path, elapsed_ns));
+}
+
+pub fn record_render_thread_timing(path: String, elapsed_ns: u64) {
+    push_render_thread_timing(path, elapsed_ns);
+}
+
+pub fn drain_render_thread_timings() -> Vec<(String, u64)> {
+    let mut guard = render_thread_timings().lock().unwrap();
+    std::mem::take(&mut *guard)
+}
+
+pub fn current_render_thread_timing_path(label: Option<&str>) -> Option<String> {
+    if !crate::perf::current_tree_enabled() {
+        return None;
+    }
+    let cur = crate::perf::current_path_joined();
+    match (cur.is_empty(), label) {
+        (true, Some(label)) => Some(label.to_string()),
+        (false, Some(label)) => Some(format!("{cur}::{label}")),
+        (false, None) => Some(cur),
+        (true, None) => None,
+    }
+}
 
 /// Newtype to send `Gd<RenderingDevice>` across threads.
 /// SAFETY: The wrapped RD is a local RenderingDevice created via
@@ -35,8 +71,13 @@ pub fn on_render_thread(f: impl FnOnce() + Send + 'static) {
 /// available.  Mirrors C#'s `CallOnRenderThread` + `ManualResetEventSlim`.
 pub fn on_render_thread_sync<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let timing_path = current_render_thread_timing_path(None);
     on_render_thread(move || {
+        let start = timing_path.as_ref().map(|_| Instant::now());
         let result = f();
+        if let (Some(path), Some(start)) = (timing_path, start) {
+            push_render_thread_timing(path, start.elapsed().as_nanos() as u64);
+        }
         let _ = tx.send(result);
     });
     rx.recv().expect("render thread work failed")
@@ -45,9 +86,14 @@ pub fn on_render_thread_sync<T: Send + 'static>(f: impl FnOnce() -> T + Send + '
 /// Frees a GPU RID on the render thread (fire-and-forget).
 pub fn free_rid_on_render_thread(rd: &mut Gd<RenderingDevice>, rid: Rid) {
     let rd_send = RdSend(rd.clone());
+    let timing_path = current_render_thread_timing_path(Some("free_rid"));
     on_render_thread(move || {
+        let start = timing_path.as_ref().map(|_| Instant::now());
         let mut rd = rd_send; // force whole-struct capture (Rust 2021)
         rd.0.free_rid(rid);
+        if let (Some(path), Some(start)) = (timing_path, start) {
+            push_render_thread_timing(path, start.elapsed().as_nanos() as u64);
+        }
     });
 }
 
@@ -59,9 +105,14 @@ pub fn buffer_clear_on_render_thread(
     size: u32,
 ) {
     let rd_send = RdSend(rd.clone());
+    let timing_path = current_render_thread_timing_path(Some("buffer_clear"));
     on_render_thread(move || {
+        let start = timing_path.as_ref().map(|_| Instant::now());
         let mut rd = rd_send; // force whole-struct capture (Rust 2021)
         rd.0.buffer_clear(rid, offset, size);
+        if let (Some(path), Some(start)) = (timing_path, start) {
+            push_render_thread_timing(path, start.elapsed().as_nanos() as u64);
+        }
     });
 }
 
@@ -117,11 +168,16 @@ pub fn update_uniform_buffer<T: bytemuck::Pod>(
 
     let rid = buffer.rid;
     let rd_send = RdSend(rd.clone());
+    let timing_path = current_render_thread_timing_path(Some("buffer_update"));
     on_render_thread(move || {
+        let start = timing_path.as_ref().map(|_| Instant::now());
         let mut rd = rd_send;
         let mut pba = PackedByteArray::new();
         pba.extend(padded.iter().copied());
         rd.0.buffer_update(rid, 0, padded_size as u32, &pba);
+        if let (Some(path), Some(start)) = (timing_path, start) {
+            push_render_thread_timing(path, start.elapsed().as_nanos() as u64);
+        }
     });
 }
 
@@ -170,7 +226,13 @@ impl ComputePipeline {
     }
 
     /// Dispatches the cached pipeline. Only the uniform set is created (and freed) per call.
-    pub fn dispatch(&self, rd: &mut Gd<RenderingDevice>, buffers: &[&BufferInfo], threads: u32) {
+    pub fn dispatch(
+        &self,
+        rd: &mut Gd<RenderingDevice>,
+        buffers: &[&BufferInfo],
+        threads: u32,
+        label: &'static str,
+    ) {
         let buffer_descs: Vec<(Rid, crate::buffer_info::BufferType)> =
             buffers.iter().map(|b| (b.rid, b.buffer_type)).collect();
 
@@ -178,8 +240,24 @@ impl ComputePipeline {
         let shader = self.shader;
         let pipeline = self.pipeline;
 
+        // Capture the timing-tree path on the worker thread BEFORE queueing.
+        let path_full = current_render_thread_timing_path(Some(label));
+
+        // Track the dispatch on the worker tree for render-thread-time folding later.
+        if let Some(ref path_full) = path_full {
+            crate::perf::with_current_tree(|tree| {
+                tree.add_cpu_ns(path_full, 0);
+            });
+        }
+
         on_render_thread(move || {
             let mut rd = rd_send;
+            let dispatch_start = if path_full.is_some() {
+                Some(Instant::now())
+            } else {
+                None
+            };
+
             let compute_list = rd.0.compute_list_begin();
             rd.0.compute_list_bind_compute_pipeline(compute_list, pipeline);
 
@@ -197,10 +275,17 @@ impl ComputePipeline {
 
             rd.0.compute_list_dispatch(compute_list, threads, 1, 1);
             rd.0.compute_list_end();
+
             rd.0.submit();
             rd.0.sync();
 
             rd.0.free_rid(uniform_set);
+
+            if let Some(start) = dispatch_start.as_ref() {
+                if let Some(path) = path_full {
+                    push_render_thread_timing(path, start.elapsed().as_nanos() as u64);
+                }
+            }
         });
     }
 
@@ -259,6 +344,7 @@ pub fn convert_buffer_to_vec<T: bytemuck::Pod + Send>(
     rd: &mut Gd<RenderingDevice>,
     buffer: &BufferInfo,
 ) -> Vec<T> {
+    let _scope = crate::perf::ThreadScope::enter("readback");
     let rd_send = RdSend(rd.clone());
     let rid = buffer.rid;
     let filled_size = buffer.filled_size;
@@ -281,6 +367,7 @@ pub fn read_buffer_element<T: bytemuck::Pod + Send>(
     buffer: &BufferInfo,
     index: u32,
 ) -> T {
+    let _scope = crate::perf::ThreadScope::enter("readback_elem");
     let elem_size = std::mem::size_of::<T>() as u32;
     let offset = index * elem_size;
     let rd_send = RdSend(rd.clone());
@@ -295,6 +382,23 @@ pub fn read_buffer_element<T: bytemuck::Pod + Send>(
                 .done();
         let bytes = byte_data.as_slice();
         *bytemuck::from_bytes::<T>(bytes)
+    })
+}
+
+/// Drains all currently captured GPU timestamps from `rd`. Returns
+/// `(name, gpu_time_ns)` tuples in capture order.
+pub fn drain_gpu_timestamps(rd: &mut Gd<RenderingDevice>) -> Vec<(String, u64)> {
+    let rd_send = RdSend(rd.clone());
+    on_render_thread_sync(move || {
+        let rd = rd_send;
+        let n = rd.0.get_captured_timestamps_count();
+        let mut out = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let name = rd.0.get_captured_timestamp_name(i).to_string();
+            let t = rd.0.get_captured_timestamp_gpu_time(i);
+            out.push((name, t));
+        }
+        out
     })
 }
 

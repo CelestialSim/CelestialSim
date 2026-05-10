@@ -7,7 +7,8 @@ use crate::compute_utils::ComputePipeline;
 use crate::state::{CesState, Triangle};
 
 const SHADER_PATH: &str = "res://addons/celestial_sim/shaders/DivideLOD.slang";
-const DIV_PREFIX_SHADER_PATH: &str = "res://addons/celestial_sim/shaders/ComputeDivPrefixSum.slang";
+const DIV_PREFIX_SHADER_PATH: &str =
+    "res://addons/celestial_sim/shaders/ComputeDivPrefixAtomic.slang";
 
 pub struct DivShader {
     pipeline: ComputePipeline,
@@ -218,14 +219,18 @@ impl DivShader {
             rd,
             state.n_tris * std::mem::size_of::<i32>() as u32,
         );
+        let div_count_buf = compute_utils::create_empty_storage_buffer(rd, 4);
+        let div_prefix_workgroups = state.n_tris.div_ceil(64).max(1);
         self.div_prefix_pipeline.dispatch(
             rd,
             &[
                 &state.t_to_divide_mask, // 0: t_to_div
                 &div_prefix_buf,         // 1: div_prefix (output)
-                &state.u_n_tris,         // 2: n_tris
+                &div_count_buf,          // 2: atomic division counter
+                &state.u_n_tris,         // 3: n_tris
             ],
-            1,
+            div_prefix_workgroups,
+            "div_prefix",
         );
 
         // Extend t_abc and optionally compute new indices on CPU
@@ -304,10 +309,11 @@ impl DivShader {
         ];
 
         let workgroups = (old_n_tris + 255) / 256;
-        self.pipeline.dispatch(rd, &buffers, workgroups);
+        self.pipeline.dispatch(rd, &buffers, workgroups, "div_lod");
 
         // Free temporary buffers
         compute_utils::free_rid_on_render_thread(rd, div_prefix_buf.rid);
+        compute_utils::free_rid_on_render_thread(rd, div_count_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, old_n_tris_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, old_n_verts_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, n_tris_to_div_buf.rid);

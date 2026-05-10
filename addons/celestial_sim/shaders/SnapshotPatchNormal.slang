@@ -42,8 +42,15 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     float3 tangent1 = normalize(cross(up, sphere_dir));
     float3 tangent2 = cross(sphere_dir, tangent1);
 
-    // Finite-difference step scaled to texel size
-    float eps = 1.0 / float(tex_size);
+    // Finite-difference step sized to one patch pixel in angular space.
+    // `1.0 / tex_size` would be a step in unit-sphere space, which at deeper
+    // LODs spans many patch pixels of angle and over-smooths the gradient
+    // (the cubemap normal pass uses the same expression but in cube-face
+    // space, so its step happens to match one cubemap pixel of angle).
+    // Scaling by the patch's angular coverage makes the step match one
+    // patch pixel of angle, giving the same finite-difference fidelity as
+    // the cubemap normal map at equivalent per-pixel angular density.
+    float eps = (2.0 * angular_extent) / float(tex_size);
 
     // Sample displaced positions at center and two offset directions
     float3 p0 = displaced_position(sphere_dir);

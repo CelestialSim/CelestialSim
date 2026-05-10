@@ -87,6 +87,10 @@ pub struct CesScatterRuntime {
     /// dispatch from the bytes stored in `noise_bytes`.
     noise_buffer: Option<BufferInfo>,
     capacity_instances: u32,
+    /// Debug/perf toggle used to test whether oversized output buffers are the
+    /// main readback cost. When enabled, every dispatch frees and reallocates
+    /// the output buffer to `next_capacity(n_tris)` before running.
+    force_shrink_each_dispatch: bool,
     params: ScatterParams,
     shader_path: String,
     /// CPU-side blue-noise bytes, set via `set_blue_noise` before the first
@@ -102,6 +106,7 @@ impl CesScatterRuntime {
             counter_buffer: None,
             noise_buffer: None,
             capacity_instances: 0,
+            force_shrink_each_dispatch: false,
             params: ScatterParams::default(),
             shader_path: shader_path.to_string(),
             noise_bytes: Vec::new(),
@@ -146,13 +151,22 @@ impl CesScatterRuntime {
         self.capacity_instances
     }
 
+    pub fn set_force_shrink_each_dispatch(&mut self, value: bool) {
+        self.force_shrink_each_dispatch = value;
+    }
+
     /// Ensures the output transform buffer holds at least `n_tris` instances'
     /// worth of storage (so worst-case all-pass dispatch doesn't overflow).
     pub fn ensure_capacity(&mut self, rd: &mut Gd<RenderingDevice>, n_tris: u32) {
-        if self.capacity_instances >= n_tris && self.out_buffer.is_some() {
+        let Some(new_capacity) = requested_output_capacity(
+            self.out_buffer.is_some(),
+            self.capacity_instances,
+            n_tris,
+            self.force_shrink_each_dispatch,
+        ) else {
             return;
-        }
-        let new_capacity = next_capacity(n_tris);
+        };
+
         let byte_size = new_capacity
             .saturating_mul(FLOATS_PER_INSTANCE)
             .saturating_mul(4);
@@ -233,20 +247,20 @@ impl CesScatterRuntime {
         };
 
         let buffers: Vec<&BufferInfo> = vec![
-            &scatter_params_buf, // 0
-            &terrain_params_buf, // 1
-            out_buf,             // 2
-            counter_buf,         // 3
-            &state.v_pos,        // 4
-            &state.t_abc,        // 5
-            &state.t_lv,         // 6
+            &scatter_params_buf,  // 0
+            &terrain_params_buf,  // 1
+            out_buf,              // 2
+            counter_buf,          // 3
+            &state.v_pos,         // 4
+            &state.t_abc,         // 5
+            &state.t_lv,          // 6
             &state.t_deactivated, // 7
-            &state.u_n_tris,     // 8
-            noise_buf,           // 9
+            &state.u_n_tris,      // 8
+            noise_buf,            // 9
         ];
 
         let workgroup_count = state.n_tris.div_ceil(64).max(1);
-        pipeline.dispatch(rd, &buffers, workgroup_count);
+        pipeline.dispatch(rd, &buffers, workgroup_count, "scatter_dispatch");
 
         // Free ephemeral uniforms.
         compute_utils::free_rid_on_render_thread(rd, scatter_params_buf.rid);
@@ -269,10 +283,7 @@ impl CesScatterRuntime {
     /// Reads back `count * 12` floats from the transform buffer. Caller must
     /// know `count` from a prior `readback_count` call.
     pub fn readback_compact(&self, rd: &mut Gd<RenderingDevice>, count: u32) -> Vec<f32> {
-        let out_buf = self
-            .out_buffer
-            .as_ref()
-            .expect("out_buffer not allocated");
+        let out_buf = self.out_buffer.as_ref().expect("out_buffer not allocated");
         let filled_floats = count.saturating_mul(FLOATS_PER_INSTANCE);
         let filled_bytes = filled_floats.saturating_mul(4);
 
@@ -291,7 +302,11 @@ impl CesScatterRuntime {
             pipeline.dispose_direct(rd);
         }
         self.pipeline = None;
-        for slot in [&mut self.out_buffer, &mut self.counter_buffer, &mut self.noise_buffer] {
+        for slot in [
+            &mut self.out_buffer,
+            &mut self.counter_buffer,
+            &mut self.noise_buffer,
+        ] {
             if let Some(buf) = slot.take() {
                 if buf.rid.is_valid() {
                     rd.free_rid(buf.rid);
@@ -299,6 +314,26 @@ impl CesScatterRuntime {
             }
         }
         self.capacity_instances = 0;
+    }
+}
+
+fn requested_output_capacity(
+    has_buffer: bool,
+    current_capacity: u32,
+    required: u32,
+    force_shrink_each_dispatch: bool,
+) -> Option<u32> {
+    let desired = next_capacity(required);
+    if !has_buffer {
+        return Some(desired);
+    }
+    if force_shrink_each_dispatch {
+        return Some(desired);
+    }
+    if current_capacity >= required {
+        None
+    } else {
+        Some(desired)
     }
 }
 
@@ -390,5 +425,19 @@ mod tests {
         let rt = CesScatterRuntime::with_default_shader();
         assert!(!rt.has_pipeline());
         assert_eq!(rt.capacity_instances(), 0);
+    }
+
+    #[test]
+    fn force_shrink_toggle_resizes_buffer_when_n_tris_drops() {
+        let current_capacity = next_capacity(200);
+        let reduced_tris = 80;
+        assert_eq!(
+            requested_output_capacity(true, current_capacity, reduced_tris, false),
+            None
+        );
+        assert_eq!(
+            requested_output_capacity(true, current_capacity, reduced_tris, true),
+            Some(next_capacity(reduced_tris))
+        );
     }
 }

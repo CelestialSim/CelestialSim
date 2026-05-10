@@ -21,9 +21,15 @@ mod layer_resources;
 #[allow(dead_code)]
 mod layers;
 #[allow(dead_code)]
+pub mod perf;
+#[allow(dead_code)]
+mod shared_texture;
+#[allow(dead_code)]
 mod state;
 #[allow(dead_code)]
 mod texture_gen;
+#[allow(dead_code)]
+mod vertex_texture_spike;
 
 struct CelestialSimExtension;
 

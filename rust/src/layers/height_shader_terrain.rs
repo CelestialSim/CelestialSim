@@ -61,7 +61,7 @@ impl CesLayer for CesHeightShaderTerrain {
             &params_buf,          // 4
         ];
 
-        pipeline.dispatch(rd, &buffers, state.n_verts);
+        pipeline.dispatch(rd, &buffers, state.n_verts, "height_shader_terrain");
 
         compute_utils::free_rid_on_render_thread(rd, radius_buf.rid);
         compute_utils::free_rid_on_render_thread(rd, params_buf.rid);

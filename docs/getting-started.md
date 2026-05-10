@@ -1,7 +1,7 @@
 # Getting Started
 
 !!! warning "Draft documentation"
-    This documentation is still in progress and missing key pages/sections.
+	This documentation is still in progress and missing key pages/sections.
 
 ## Prerequisites
 

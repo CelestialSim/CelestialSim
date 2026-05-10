@@ -33,6 +33,7 @@ impl INode for CesDumpSubdivisionRust {
             precise_normals: false,
             low_poly_look: true,
             show_debug_messages: true,
+            show_debug_lod_histogram: false,
         };
 
         let mut algo = CesRunAlgo::new();

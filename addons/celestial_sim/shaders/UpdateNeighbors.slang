@@ -73,10 +73,6 @@ int getParentNeighbor(int parent_idx, Edge edge)
 // Update edge neighbor by finding closest child of parent's neighbor
 void updateEdgeNeighbor(int tris_idx, int parent_idx, Edge edge)
 {
-    if (t_lv[tris_idx] >= 4){
-        // TODO: This algorithm has some error for high LOD levels
-        return;
-    }
     // Get parent's neighbor for this edge
     int parent_neigh = getParentNeighbor(parent_idx, edge);
     

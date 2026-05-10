@@ -55,7 +55,8 @@ impl MergeShader {
             &state.t_parent,        // 15
         ];
 
-        self.pipeline.dispatch(rd, &buffers, state.n_tris);
+        self.pipeline
+            .dispatch(rd, &buffers, state.n_tris, "merge_lod");
 
         n_to_merge
     }

@@ -10,9 +10,13 @@ shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
 
 [sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_t1"]
 script = ExtResource("1_terrain")
-resolution = 1000
+resolution = 200
 max_snapshot_levels = 4
-height_tiles = 6.223
+show_snapshot_borders = false
+height_tiles = 13.093
+height_octaves = 5
+erosion_tiles = 3.242
+erosion_octaves = 6
 
 [sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_jleck"]
 enabled = false
@@ -38,9 +42,9 @@ rings = 2
 script = ExtResource("2_wpes0")
 mesh = SubResource("CapsuleMesh_wnqpw")
 material = SubResource("StandardMaterial3D_wpes0")
-subdivision_level = 6
+subdivision_level = 7
 noise_strength = 0.002
-seed = 6
+seed = 20
 height_min = 0.509
 height_max = 0.447
 albedo_target = Color(0.5686275, 0.7372549, 0.49411765, 1)
@@ -67,9 +71,12 @@ metadata/_custom_type_script = "uid://bv4fa87d46ljf"
 
 [node name="Planet" type="CesCelestialRust" parent="." unique_id=494222983]
 radius = 300.0
-subdivisions = 10
-triangle_screen_size = 0.001
+subdivisions = 16
+triangle_screen_size = 0.01
 low_poly_look = false
+scatter_force_shrink_each_dispatch = true
+minimum_lod_update_time_ms = 0
+experimental_vertex_position_texture_spike = true
 height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_h1")])
 texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1"), SubResource("CesTextureLayerResource_jleck"), SubResource("CesTextureLayerResource_7xawd")])
 scatter_layers = Array[CesScatterLayerResource]([SubResource("CesScatterLayerResource_7xawd"), SubResource("CesScatterLayerResource_wnqpw")])

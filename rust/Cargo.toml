@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[[bin]]
+name = "generate_blue_noise"
+path = "src/bin/generate_blue_noise.rs"
+
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master", features = [
     "experimental-threads",

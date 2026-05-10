@@ -26,18 +26,12 @@ StructuredBuffer<int> visible_mask;
 StructuredBuffer<int> visible_prefix;
 
 [[vk::binding(9, 0)]]
-RWStructuredBuffer<float> out_pos;
+RWTexture2D<float4> out_pos_tex;
 
 [[vk::binding(10, 0)]]
-RWStructuredBuffer<int> out_tris;
-
-[[vk::binding(11, 0)]]
-RWStructuredBuffer<float> out_uv;
-
-[[vk::binding(12, 0)]]
 ConstantBuffer<uint> n_tris;
 
-[[vk::binding(13, 0)]]
+[[vk::binding(11, 0)]]
 ConstantBuffer<uint> n_visible_tris;
 
 float3 Midpoint(int v0, int v1)
@@ -47,17 +41,20 @@ float3 Midpoint(int v0, int v1)
 
 void WritePos(uint vertex_idx, float3 p)
 {
-    uint base = vertex_idx * 3u;
-    out_pos[base + 0u] = p.x;
-    out_pos[base + 1u] = p.y;
-    out_pos[base + 2u] = p.z;
-}
+    uint width;
+    uint height;
+    out_pos_tex.GetDimensions(width, height);
+    width = max(width, 1u);
+    height = max(height, 1u);
 
-void WriteUv(uint vertex_idx, float2 uv)
-{
-    uint base = vertex_idx * 2u;
-    out_uv[base + 0u] = uv.x;
-    out_uv[base + 1u] = uv.y;
+    uint x = vertex_idx % width;
+    uint y = vertex_idx / width;
+    if (y >= height)
+    {
+        return;
+    }
+
+    out_pos_tex[int2(x, y)] = float4(p, 1.0f);
 }
 
 void StitchEdge(int tri_idx, uint out_vertex_idx, int neigh_idx, int parent_v0, int parent_v1)
@@ -109,15 +106,6 @@ void computeMain(uint3 DTid : SV_DispatchThreadID)
     WritePos(base_idx + 0u, v_pos[tri.x].xyz);
     WritePos(base_idx + 1u, v_pos[tri.y].xyz);
     WritePos(base_idx + 2u, v_pos[tri.z].xyz);
-
-    out_tris[base_idx + 0] = (int)(base_idx + 0);
-    out_tris[base_idx + 1] = (int)(base_idx + 1);
-    out_tris[base_idx + 2] = (int)(base_idx + 2);
-
-    float level = (float)t_lv[idx];
-    WriteUv(base_idx + 0u, float2(level, 0.0f));
-    WriteUv(base_idx + 1u, float2(level, 0.0f));
-    WriteUv(base_idx + 2u, float2(level, 0.0f));
 
     bool is_a_tris = parent_tri.x == tri.x;
     bool is_b_tris = parent_tri.y == tri.y;

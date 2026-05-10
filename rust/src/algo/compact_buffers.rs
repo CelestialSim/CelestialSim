@@ -119,7 +119,8 @@ impl CompactShaders {
             &active_count_buf,       // 32
         ];
 
-        self.compact_tris.dispatch(rd, &buffers, state.n_tris);
+        self.compact_tris
+            .dispatch(rd, &buffers, state.n_tris, "compact_tris");
 
         // Swap old buffers with compacted ones, free old
         let old_bufs = [
@@ -173,7 +174,7 @@ impl CompactShaders {
         ];
 
         self.mark_active_verts
-            .dispatch(rd, &mark_buffers, state.n_tris);
+            .dispatch(rd, &mark_buffers, state.n_tris, "mark_active_verts");
 
         let mut vert_mask: Vec<i32> =
             compute_utils::convert_buffer_to_vec(rd, &vert_active_mask_buf);
@@ -217,7 +218,7 @@ impl CompactShaders {
             ];
 
             self.compact_verts
-                .dispatch(rd, &compact_vert_buffers, state.n_verts);
+                .dispatch(rd, &compact_vert_buffers, state.n_verts, "compact_verts");
 
             // Swap vertex buffers
             let old_v_pos = std::mem::replace(&mut state.v_pos, v_pos_dst);
@@ -248,7 +249,7 @@ impl CompactShaders {
             ];
 
             self.remap_tri_verts
-                .dispatch(rd, &remap_buffers, state.n_tris);
+                .dispatch(rd, &remap_buffers, state.n_tris, "remap_tri_verts");
 
             let old_t_abc = std::mem::replace(&mut state.t_abc, t_abc_remapped);
             compute_utils::free_rid_on_render_thread(rd, old_t_abc.rid);

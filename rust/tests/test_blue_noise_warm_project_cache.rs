@@ -20,7 +20,10 @@ fn cache_path() -> PathBuf {
     let [w, h, d]: [u32; 3] = [32, 32, 32];
     project_root().join(".cache").join(format!(
         "blue_noise_{}x{}x{}_seed{:#x}.bin",
-        w, h, d, blue_noise::DEFAULT_SEED
+        w,
+        h,
+        d,
+        blue_noise::DEFAULT_SEED
     ))
 }
 
