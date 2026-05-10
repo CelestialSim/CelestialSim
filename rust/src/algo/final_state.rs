@@ -266,11 +266,9 @@ fn create_visible_prefix_buffers(
     let visible_prefix_buffer = compute_utils::create_empty_storage_buffer(rd, state.n_tris * 4);
     let visible_count_buffer = compute_utils::create_empty_storage_buffer(rd, 4);
     if early_exit {
-        godot_print!("Early exit 267");
         compute_utils::free_rid_on_render_thread(rd, visible_count_buffer.rid);
         return (visible_mask_buffer, visible_prefix_buffer, 1310720);
     }
-    godot_print!("Early {}", state.n_tris);
     let visible_prefix_label = "visible_prefix";
     let visible_prefix_start = Instant::now();
     let visible_prefix_workgroups = state.n_tris.div_ceil(64).max(1);
@@ -288,13 +286,6 @@ fn create_visible_prefix_buffers(
         visible_prefix_label,
     );
     let visible_prefix_elapsed_ns = visible_prefix_start.elapsed().as_nanos() as u64;
-    let visible_prefix_elapsed_ms = visible_prefix_elapsed_ns as f64 / 1_000_000.0;
-    godot_print!(
-        "[FinalState] visible_prefix atomic dispatch cpu={:.3} ms (n_tris={}, workgroups={})",
-        visible_prefix_elapsed_ms,
-        state.n_tris,
-        visible_prefix_workgroups
-    );
     crate::perf::with_current_tree(|tree| {
         let cur = crate::perf::current_path_joined();
         let path_full = if cur.is_empty() {

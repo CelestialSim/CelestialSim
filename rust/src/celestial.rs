@@ -27,6 +27,7 @@ use godot::prelude::*;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -478,6 +479,9 @@ struct WorkerState {
     /// Last `vertex_count` for which we shipped a placeholder Vec to the main
     /// thread. None until the first texture-branch frame.
     last_placeholder_vertex_count: Option<u32>,
+    /// Test-only: cloned from `CesCelestialRust::pending_dump_path`. The worker
+    /// checks it at the end of each frame and dumps state if Some.
+    pending_dump_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 struct ScopedTimer {
@@ -638,6 +642,10 @@ pub struct CesCelestialRust {
     snapshot_info: Vec<(Vector3, Vector3, Vector3, f32)>,
     // Threading fields
     work_tx: Option<std::sync::mpsc::Sender<(Vector3, WorkerConfig)>>,
+    /// Test-only: when set, the worker dumps its post-frame state to this path
+    /// at the end of the next algo run, then clears the slot. Wired by
+    /// `dump_test_state` #[func] and read by the worker thread.
+    pending_dump_path: Arc<Mutex<Option<PathBuf>>>,
     result_rx: Option<std::sync::mpsc::Receiver<MeshResult>>,
     texture_cmd_tx: Option<std::sync::mpsc::Sender<TextureCommand>>,
     texture_result_rx: Option<std::sync::mpsc::Receiver<TextureResult>>,
@@ -721,6 +729,7 @@ impl INode3D for CesCelestialRust {
             snapshot_info: Vec::new(),
 
             work_tx: None,
+            pending_dump_path: Arc::new(Mutex::new(None)),
             result_rx: None,
             texture_cmd_tx: None,
             texture_result_rx: None,
@@ -2225,6 +2234,7 @@ impl CesCelestialRust {
         // Find cubemap resolution from child node
         let cubemap_size = self.find_cubemap_resolution();
 
+        let pending_dump_path = self.pending_dump_path.clone();
         let mut worker = WorkerState {
             rd,
             graph_generator: None,
@@ -2236,6 +2246,7 @@ impl CesCelestialRust {
             position_texture: SharedPositionTexture::new(),
             scatter_runtimes,
             last_placeholder_vertex_count: None,
+            pending_dump_path,
         };
 
         let handle = std::thread::spawn(move || {
@@ -2464,6 +2475,36 @@ impl CesCelestialRust {
                         )
                     }
                 };
+
+                // Test-only: if a dump was requested, run it now (before the
+                // result_tx send) so the file exists by the time the test
+                // scene's poll loop next checks. Take() so each request fires
+                // exactly once.
+                let dump_path: Option<PathBuf> = worker
+                    .pending_dump_path
+                    .lock()
+                    .ok()
+                    .and_then(|mut g| g.take());
+                if let Some(path) = dump_path {
+                    let WorkerState {
+                        ref mut rd,
+                        ref mut graph_generator,
+                        ..
+                    } = worker;
+                    if let Some(gen) = graph_generator.as_mut() {
+                        match gen.dump_visible_state(rd, config.radius, &path) {
+                            Ok(()) => godot_print!(
+                                "[CesCelestialRust] Dumped LOD test state to {}",
+                                path.display()
+                            ),
+                            Err(e) => godot_print!(
+                                "[CesCelestialRust] Failed to dump LOD test state to {}: {}",
+                                path.display(),
+                                e
+                            ),
+                        }
+                    }
+                }
 
                 let has_final_mesh = if let Some(ref output) = cpu_output {
                     !output.pos.is_empty() && !output.tris.is_empty()
@@ -2928,6 +2969,23 @@ impl CesCelestialRust {
     fn on_layer_changed(&mut self) {
         godot_print!("[CesCelestialRust] on_layer_changed signal received");
         self.layers_dirty = true;
+    }
+
+    /// Test-only: schedule a binary dump of the next post-algo visible mesh
+    /// state to `path`. The dump is performed by the worker at the end of the
+    /// next frame. Caller (typically a GDScript test driver) should poll for
+    /// `path` to exist before reading. See `rust/src/algo/dump_format.rs` for
+    /// the on-disk layout.
+    #[func]
+    fn dump_test_state(&mut self, path: GString) {
+        let path_buf = PathBuf::from(path.to_string());
+        if let Ok(mut slot) = self.pending_dump_path.lock() {
+            *slot = Some(path_buf);
+        }
+        // Force the next _process tick to dispatch a worker frame so the
+        // worker actually picks up the pending dump request. Without this the
+        // worker idles until something else triggers a re-run.
+        self.values_updated = true;
     }
 }
 

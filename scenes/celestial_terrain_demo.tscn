@@ -15,6 +15,7 @@ max_snapshot_levels = 4
 show_snapshot_borders = false
 height_tiles = 13.093
 height_octaves = 5
+erosion_tiles = 3.242
 erosion_octaves = 6
 
 [sub_resource type="CesTextureLayerResource" id="CesTextureLayerResource_jleck"]

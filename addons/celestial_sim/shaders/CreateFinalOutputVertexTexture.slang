@@ -111,29 +111,26 @@ void computeMain(uint3 DTid : SV_DispatchThreadID)
     bool is_b_tris = parent_tri.y == tri.y;
     bool is_c_tris = parent_tri.z == tri.z;
 
-    if (t_lv[idx] < 4)
+    if (is_a_tris)
     {
-        if (is_a_tris)
-        {
-            StitchEdge((int)idx, base_idx + 1, t_neigh_ab[idx], parent_tri.x, parent_tri.y);
-            StitchEdge((int)idx, base_idx + 2, t_neigh_ca[idx], parent_tri.z, parent_tri.x);
-        }
-        else if (is_b_tris)
-        {
-            StitchEdge((int)idx, base_idx + 0, t_neigh_ab[idx], parent_tri.x, parent_tri.y);
-            StitchEdge((int)idx, base_idx + 2, t_neigh_bc[idx], parent_tri.y, parent_tri.z);
-        }
-        else if (is_c_tris)
-        {
-            StitchEdge((int)idx, base_idx + 1, t_neigh_bc[idx], parent_tri.y, parent_tri.z);
-            StitchEdge((int)idx, base_idx + 0, t_neigh_ca[idx], parent_tri.z, parent_tri.x);
-        }
-        else
-        {
-            int tri_idx = (int)idx;
-            StitchEdge(tri_idx, base_idx + 0, t_neigh_bc[tri_idx - 1], parent_tri.y, parent_tri.z);
-            StitchEdge(tri_idx, base_idx + 1, t_neigh_ca[tri_idx - 3], parent_tri.z, parent_tri.x);
-            StitchEdge(tri_idx, base_idx + 2, t_neigh_ab[tri_idx - 2], parent_tri.x, parent_tri.y);
-        }
+        StitchEdge((int)idx, base_idx + 1, t_neigh_ab[idx], parent_tri.x, parent_tri.y);
+        StitchEdge((int)idx, base_idx + 2, t_neigh_ca[idx], parent_tri.z, parent_tri.x);
+    }
+    else if (is_b_tris)
+    {
+        StitchEdge((int)idx, base_idx + 0, t_neigh_ab[idx], parent_tri.x, parent_tri.y);
+        StitchEdge((int)idx, base_idx + 2, t_neigh_bc[idx], parent_tri.y, parent_tri.z);
+    }
+    else if (is_c_tris)
+    {
+        StitchEdge((int)idx, base_idx + 1, t_neigh_bc[idx], parent_tri.y, parent_tri.z);
+        StitchEdge((int)idx, base_idx + 0, t_neigh_ca[idx], parent_tri.z, parent_tri.x);
+    }
+    else
+    {
+        int tri_idx = (int)idx;
+        StitchEdge(tri_idx, base_idx + 0, t_neigh_bc[tri_idx - 1], parent_tri.y, parent_tri.z);
+        StitchEdge(tri_idx, base_idx + 1, t_neigh_ca[tri_idx - 3], parent_tri.z, parent_tri.x);
+        StitchEdge(tri_idx, base_idx + 2, t_neigh_ab[tri_idx - 2], parent_tri.x, parent_tri.y);
     }
 }

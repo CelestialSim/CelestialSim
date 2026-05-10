@@ -254,6 +254,118 @@ impl CesRunAlgo {
         final_output
     }
 
+    /// Reads the current visible mesh + level + neighbor topology back from the
+    /// GPU and writes it to `path` using the [`crate::algo::dump_format`]
+    /// binary layout. Called from a debug/test path; not used in production.
+    /// Caller must invoke this after a frame's algo loop has converged
+    /// (e.g. at the end of `run_triangle_graph_updates`).
+    pub fn dump_visible_state(
+        &mut self,
+        rd: &mut Gd<RenderingDevice>,
+        radius: f32,
+        path: &std::path::Path,
+    ) -> std::io::Result<()> {
+        use crate::algo::dump_format::{encode, DumpHeader, DumpedTri};
+        use std::io::{Error, ErrorKind};
+
+        let state = self.state.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Other,
+                "CesRunAlgo::dump_visible_state: state is None (algo never ran)",
+            )
+        })?;
+        let shader = self.final_state_shader.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Other,
+                "CesRunAlgo::dump_visible_state: final_state_shader is None",
+            )
+        })?;
+
+        // Run the standard final-output pass to obtain post-stitch positions.
+        let final_output = final_state::create_final_output(rd, state, false, shader);
+        let n_visible_tris = (final_output.pos.len() / 3) as u32;
+
+        // Read back the per-internal-triangle data we need for adjacency.
+        let levels: Vec<i32> = state.get_level(rd);
+        let divided: Vec<i32> = state.get_divided_mask(rd);
+        let deactivated: Vec<i32> = state.get_t_deactivated_mask(rd);
+        let neigh_ab: Vec<i32> = crate::compute_utils::convert_buffer_to_vec(rd, &state.t_neight_ab);
+        let neigh_bc: Vec<i32> = crate::compute_utils::convert_buffer_to_vec(rd, &state.t_neight_bc);
+        let neigh_ca: Vec<i32> = crate::compute_utils::convert_buffer_to_vec(rd, &state.t_neight_ca);
+
+        let n_tris = state.n_tris as usize;
+        // Mirror the visibility logic in ComputeVisiblePrefixAtomic: visible
+        // when divided == 0 AND deactivated == 0.
+        let visible_mask: Vec<i32> = (0..n_tris)
+            .map(|i| {
+                let d = *divided.get(i).unwrap_or(&0);
+                let a = *deactivated.get(i).unwrap_or(&0);
+                if d == 0 && a == 0 {
+                    1
+                } else {
+                    0
+                }
+            })
+            .collect();
+        // Inclusive prefix sum so visible_prefix[i] - 1 is the dense visible index.
+        let mut visible_prefix: Vec<i32> = Vec::with_capacity(n_tris);
+        let mut acc: i32 = 0;
+        for &v in &visible_mask {
+            acc += v;
+            visible_prefix.push(acc);
+        }
+        let counted_visible = *visible_prefix.last().unwrap_or(&0) as u32;
+        if counted_visible != n_visible_tris {
+            return Err(Error::new(
+                ErrorKind::Other,
+                format!(
+                    "visible-count mismatch: prefix says {counted_visible}, final_output says {n_visible_tris}"
+                ),
+            ));
+        }
+
+        let resolve_neighbor = |n: i32| -> i32 {
+            if n < 0 || (n as usize) >= n_tris {
+                return -1;
+            }
+            if visible_mask[n as usize] == 0 {
+                return -1;
+            }
+            visible_prefix[n as usize] - 1
+        };
+
+        let mut tris: Vec<DumpedTri> = Vec::with_capacity(n_visible_tris as usize);
+        for i in 0..n_tris {
+            if visible_mask[i] == 0 {
+                continue;
+            }
+            let v = (visible_prefix[i] - 1) as usize;
+            let p0 = final_output.pos[3 * v];
+            let p1 = final_output.pos[3 * v + 1];
+            let p2 = final_output.pos[3 * v + 2];
+            tris.push(DumpedTri {
+                positions: [
+                    [p0.x, p0.y, p0.z],
+                    [p1.x, p1.y, p1.z],
+                    [p2.x, p2.y, p2.z],
+                ],
+                level: levels[i],
+                neighbors: [
+                    resolve_neighbor(neigh_ab[i]),
+                    resolve_neighbor(neigh_bc[i]),
+                    resolve_neighbor(neigh_ca[i]),
+                ],
+            });
+        }
+
+        let header = DumpHeader {
+            n_visible_tris,
+            radius,
+        };
+        let bytes = encode(header, &tris);
+        std::fs::write(path, &bytes)
+    }
+
     /// Frees all GPU resources held by the state.
     pub fn dispose(&mut self, rd: &mut Gd<RenderingDevice>) {
         if let Some(ref state) = self.state {
