@@ -19,22 +19,6 @@ The release zip ships prebuilt binaries for Linux x86_64, Windows x86_64, and ma
 
 If you are working from a source checkout, the `shader-slang` plugin is already vendored under `addons/shader-slang/`.
 
-# Advance features
-### Converting Slang Shaders to c code
-
-Use
-```
-slangc filename.slang -o filename_out.cpp
-```
-
-Compile the output C++ file to a shared library using
-```
-g++ -shared -fPIC -O2 Tests/MultiplyTest_out.cpp -o Tests/libMultiplyTest.so
-```
-
-To run tests use
-godot Tests/scene_name.tscn --quit-after 3
-
 # Documentation
 
 The documentation CI now publishes a small landing page plus the Rust API reference generated from `cargo doc`.
