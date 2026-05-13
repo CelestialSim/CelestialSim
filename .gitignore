@@ -23,3 +23,8 @@ site/
 
 .repowise/
 rust/src/target/analyzer/
+
+# Poly Haven scatter assets — see
+# addons/celestial_sim/assets/environment/rocks/README.md for download steps.
+# The README is tracked; everything inside the per-asset folders is not.
+/addons/celestial_sim/assets/environment/rocks/rock_moss_set_02_*/

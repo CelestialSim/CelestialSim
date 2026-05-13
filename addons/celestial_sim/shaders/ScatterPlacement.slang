@@ -44,6 +44,15 @@ public struct ScatterParams
 
     float3 albedo_target;
     float  _pad;
+
+    // Multi-variant filter (see `mesh_source::variant_for_triangle`).
+    // When `variant_count > 1`, only triangles whose
+    // `wang_hash(tri_idx ^ wang_hash(seed)) % variant_count == variant_id`
+    // are emitted. Defaults: variant_id = 0, variant_count = 1 (no-op).
+    uint variant_id;
+    uint variant_count;
+    uint _pad1;
+    uint _pad2;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<ScatterParams> scatter_params;
@@ -138,6 +147,20 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     float3 pc = v_pos[abc.z].xyz;
     float3 center = (pa + pb + pc) * (1.0 / 3.0);
     float3 dir = normalize(center);
+
+    // Variant filter — hash the centroid direction (stable across LOD
+    // compaction) instead of `tri_idx`. The CompactTris pass reshuffles
+    // indices on every divide/merge, so an index-based hash would flip the
+    // variant assignment for the same physical triangle as the camera moves.
+    // Same convention as the yaw seed below; we use `.x` here vs `.z` for
+    // yaw so the two stay statistically independent.
+    if (scatter_params.variant_count > 1u)
+    {
+        float v_hash = hash3(dir * 137.0 + float(scatter_params.seed)).x;
+        uint v = uint(clamp(v_hash * 0.5 + 0.5, 0.0, 0.9999999)
+                      * float(scatter_params.variant_count));
+        if (v != scatter_params.variant_id) return;
+    }
 
     // Sample terrain noise inline (matches mask layer / planet).
     float2 hm = terrain_height_erosion_triplanar(dir, terrain_params);

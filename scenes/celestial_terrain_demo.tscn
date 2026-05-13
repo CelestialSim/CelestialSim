@@ -4,6 +4,9 @@
 [ext_resource type="Script" uid="uid://bbi6d86utyeoh" path="res://addons/celestial_sim/layers/ces_scatter_mask_texture_layer.gd" id="2_wnqpw"]
 [ext_resource type="Script" uid="uid://bv4fa87d46ljf" path="res://addons/celestial_sim/layers/ces_scatter_layer.gd" id="2_wpes0"]
 [ext_resource type="Script" uid="uid://cwosrvp03o7qk" path="res://addons/celestial_sim/layers/ces_show_level_texture_layer.gd" id="3_jleck"]
+[ext_resource type="Script" uid="uid://d4aq5jb8tj5ym" path="res://addons/celestial_sim/layers/ces_gltf_child_pick.gd" id="ces_gltf_child_pick"]
+[ext_resource type="Script" uid="uid://7xx7328j0jqf" path="res://addons/celestial_sim/layers/ces_mesh_source_gltf.gd" id="ces_mesh_source_gltf"]
+[ext_resource type="PackedScene" uid="uid://bg3tqkfskm6co" path="res://addons/celestial_sim/assets/environment/rocks/rock_moss_set_02_1k/rock_moss_set_02_1k_lo.gltf" id="rocks_gltf"]
 
 [sub_resource type="CesHeightLayerResource" id="CesHeightLayerResource_h1"]
 shader_path = "res://addons/celestial_sim/shaders/TerrainHeight.slang"
@@ -67,6 +70,52 @@ albedo_target = Color(0.33967912, 0.8931226, 0.30769715, 1)
 albedo_tolerance = 0.473
 metadata/_custom_type_script = "uid://bv4fa87d46ljf"
 
+[sub_resource type="Resource" id="pick_rock07"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock07"
+
+[sub_resource type="Resource" id="pick_rock08"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock08"
+
+[sub_resource type="Resource" id="pick_rock09"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock09"
+
+[sub_resource type="Resource" id="pick_rock10"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock10"
+
+[sub_resource type="Resource" id="pick_rock11"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock11"
+
+[sub_resource type="Resource" id="pick_rock12"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock12"
+
+[sub_resource type="Resource" id="pick_rock13"]
+script = ExtResource("ces_gltf_child_pick")
+node_name = &"rock_moss_set_02_rock13"
+enabled = false
+
+[sub_resource type="CesMeshSourceResource" id="rocks_mesh_source"]
+script = ExtResource("ces_mesh_source_gltf")
+gltf = ExtResource("rocks_gltf")
+picks = Array[ExtResource("ces_gltf_child_pick")]([SubResource("pick_rock07"), SubResource("pick_rock08"), SubResource("pick_rock09"), SubResource("pick_rock10"), SubResource("pick_rock11"), SubResource("pick_rock12"), SubResource("pick_rock13")])
+
+[sub_resource type="CesScatterLayerResource" id="CesScatterLayerResource_rocks"]
+script = ExtResource("2_wpes0")
+mesh_source = SubResource("rocks_mesh_source")
+subdivision_level = 8
+noise_strength = 0.372
+seed = 42
+height_min = 0.5
+height_max = 0.7
+albedo_target = Color(0.4, 0.35, 0.3, 1)
+albedo_tolerance = 0.282
+metadata/_custom_type_script = "uid://bv4fa87d46ljf"
+
 [node name="TerrainDemo" type="Node3D" unique_id=946981429]
 
 [node name="Planet" type="CesCelestialRust" parent="." unique_id=494222983]
@@ -79,7 +128,7 @@ minimum_lod_update_time_ms = 0
 experimental_vertex_position_texture_spike = true
 height_layers = Array[CesHeightLayerResource]([SubResource("CesHeightLayerResource_h1")])
 texture_layers = Array[CesTextureLayerResource]([SubResource("CesTextureLayerResource_t1"), SubResource("CesTextureLayerResource_jleck"), SubResource("CesTextureLayerResource_7xawd")])
-scatter_layers = Array[CesScatterLayerResource]([SubResource("CesScatterLayerResource_7xawd"), SubResource("CesScatterLayerResource_wnqpw")])
+scatter_layers = Array[CesScatterLayerResource]([SubResource("CesScatterLayerResource_7xawd"), SubResource("CesScatterLayerResource_wnqpw"), SubResource("CesScatterLayerResource_rocks")])
 transform = Transform3D(0.9775558, 0, -0.21067649, 0, 1, 0, 0.21067649, 0, 0.9775558, 0, 0, 0)
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=1889152311]

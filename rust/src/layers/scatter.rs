@@ -40,7 +40,15 @@ pub const DEFAULT_SCATTER_SHADER_PATH: &str =
 /// Floats per instance in the MultiMesh 3D layout (mat3x4, row-major).
 const FLOATS_PER_INSTANCE: u32 = 12;
 
-/// Mirrors `ScatterParams` in `ScatterPlacement.slang`. 48 bytes, 16-aligned.
+/// Mirrors `ScatterParams` in `ScatterPlacement.slang`. 64 bytes, 16-aligned.
+///
+/// `variant_id` / `variant_count` drive the multi-variant filter: when
+/// `variant_count > 1`, the shader hashes each triangle's centroid direction
+/// (`hash3(dir * 137.0 + seed).x`) and only emits triangles whose hashed
+/// bucket equals `variant_id`. Hashing the centroid direction (instead of
+/// `tri_idx`) keeps the assignment stable across LOD compaction — see
+/// `ScatterPlacement.slang` for the rationale. Default: `variant_id = 0`,
+/// `variant_count = 1` (filter is a no-op for the single-mesh case).
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterParams {
@@ -56,6 +64,11 @@ pub struct ScatterParams {
 
     pub albedo_target: [f32; 3],
     pub _pad: f32,
+
+    pub variant_id: u32,
+    pub variant_count: u32,
+    pub _pad1: u32,
+    pub _pad2: u32,
 }
 
 impl Default for ScatterParams {
@@ -74,6 +87,11 @@ impl Default for ScatterParams {
 
             albedo_target: [0.25, 0.4, 0.15],
             _pad: 0.0,
+
+            variant_id: 0,
+            variant_count: 1,
+            _pad1: 0,
+            _pad2: 0,
         }
     }
 }
@@ -377,11 +395,15 @@ mod tests {
             noise_dim: 32,
             albedo_target: [0.2, 0.6, 0.2],
             _pad: 0.0,
+            variant_id: 2,
+            variant_count: 3,
+            _pad1: 0,
+            _pad2: 0,
         };
         let bytes = bytemuck::bytes_of(&params);
-        assert_eq!(std::mem::size_of::<ScatterParams>(), 48);
+        assert_eq!(std::mem::size_of::<ScatterParams>(), 64);
         assert_eq!(std::mem::align_of::<ScatterParams>(), 16);
-        assert_eq!(bytes.len(), 48);
+        assert_eq!(bytes.len(), 64);
 
         assert_eq!(read_f32(bytes, 0), params.planet_radius);
         assert_eq!(read_u32(bytes, 4), params.seed);
@@ -397,6 +419,18 @@ mod tests {
         assert_eq!(read_f32(bytes, 36), params.albedo_target[1]);
         assert_eq!(read_f32(bytes, 40), params.albedo_target[2]);
         assert_eq!(read_f32(bytes, 44), params._pad);
+
+        assert_eq!(read_u32(bytes, 48), params.variant_id);
+        assert_eq!(read_u32(bytes, 52), params.variant_count);
+        assert_eq!(read_u32(bytes, 56), params._pad1);
+        assert_eq!(read_u32(bytes, 60), params._pad2);
+    }
+
+    #[test]
+    fn scatter_params_default_variant_filter_is_passthrough() {
+        let p = ScatterParams::default();
+        assert_eq!(p.variant_id, 0);
+        assert_eq!(p.variant_count, 1);
     }
 
     #[test]

@@ -10,6 +10,15 @@ extends CesScatterLayerResource
 ## are atomically compacted into a packed buffer so every visible MultiMesh
 ## instance corresponds to a real spawn.
 
+## Optional source for the scattered mesh. When set, takes precedence over
+## `mesh` and `material` (which remain for backward compatibility with
+## primitive meshes like CapsuleMesh/BoxMesh). For multi-mesh glTF assets,
+## use `CesMeshSourceGltf` and toggle individual `picks`.
+@export var mesh_source: CesMeshSource:
+	set(v):
+		mesh_source = v
+		emit_changed()
+
 @export var mesh: Mesh:
 	set(v):
 		mesh = v

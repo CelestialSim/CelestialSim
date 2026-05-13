@@ -10,6 +10,10 @@ crate-type = ["cdylib"]
 name = "generate_blue_noise"
 path = "src/bin/generate_blue_noise.rs"
 
+[[bin]]
+name = "decimate_gltf"
+path = "src/bin/decimate_gltf.rs"
+
 [dependencies]
 godot = { git = "https://github.com/godot-rust/gdext", branch = "master", features = [
     "experimental-threads",
@@ -19,6 +23,8 @@ bytemuck = { version = "1", features = ["derive"] }
 rustfft = "6"
 rand = "0.9"
 rand_pcg = "0.9"
+meshopt = "0.6.2"
+serde_json = "1"
 
 [dev-dependencies]
 wgpu = "24"

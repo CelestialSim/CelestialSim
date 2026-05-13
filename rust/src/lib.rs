@@ -20,6 +20,7 @@ mod initial_state;
 mod layer_resources;
 #[allow(dead_code)]
 mod layers;
+pub mod mesh_source;
 #[allow(dead_code)]
 pub mod perf;
 #[allow(dead_code)]

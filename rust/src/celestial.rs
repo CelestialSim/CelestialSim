@@ -53,18 +53,98 @@ fn non_null_elements<T: GodotClass + Inherits<Resource>>(arr: &Array<Gd<T>>) -> 
 
 /// Pure helper: counts how many booleans in the slice are `true`.
 /// Extracted so we can unit-test the core logic without a Godot runtime.
+#[cfg(test)]
 fn count_enabled_flags(flags: &[bool]) -> usize {
     flags.iter().filter(|&&x| x).count()
+}
+
+/// Reads a row-major mat3x4 from 12 floats and reconstructs the matching
+/// `Transform3D`. Layout matches the MultiMesh TRANSFORM_3D buffer convention
+/// emitted by `ScatterPlacement.slang`:
+///   [b0.x, b1.x, b2.x, origin.x,
+///    b0.y, b1.y, b2.y, origin.y,
+///    b0.z, b1.z, b2.z, origin.z]
+/// where (b0, b1, b2) are the basis columns. In Godot the `Basis` is stored
+/// row-major, so `rows[i] = (b0.<axis_i>, b1.<axis_i>, b2.<axis_i>)`.
+fn transform3d_from_floats12(chunk: &[f32]) -> Transform3D {
+    debug_assert_eq!(chunk.len(), 12, "expected 12 floats");
+    let row0 = Vector3::new(chunk[0], chunk[1], chunk[2]);
+    let row1 = Vector3::new(chunk[4], chunk[5], chunk[6]);
+    let row2 = Vector3::new(chunk[8], chunk[9], chunk[10]);
+    let origin = Vector3::new(chunk[3], chunk[7], chunk[11]);
+    Transform3D::new(Basis::from_rows(row0, row1, row2), origin)
+}
+
+/// Inverse of `transform3d_from_floats12`: writes a `Transform3D` into 12
+/// floats using the MultiMesh TRANSFORM_3D layout described above.
+fn write_transform3d_floats12(chunk: &mut [f32], t: Transform3D) {
+    debug_assert_eq!(chunk.len(), 12, "expected 12 floats");
+    let row0 = t.basis.rows[0];
+    let row1 = t.basis.rows[1];
+    let row2 = t.basis.rows[2];
+    chunk[0] = row0.x;
+    chunk[1] = row0.y;
+    chunk[2] = row0.z;
+    chunk[3] = t.origin.x;
+    chunk[4] = row1.x;
+    chunk[5] = row1.y;
+    chunk[6] = row1.z;
+    chunk[7] = t.origin.y;
+    chunk[8] = row2.x;
+    chunk[9] = row2.y;
+    chunk[10] = row2.z;
+    chunk[11] = t.origin.z;
+}
+
+/// Post-multiplies each 12-float mat3x4 chunk in `packed` by `baked` so
+/// rendered instances appear at `scatter_t * baked_node_t`. The buffer
+/// layout is row-major mat3x4 (per Godot MultiMesh::set_buffer convention).
+fn apply_baked_transform_in_place(packed: &mut [f32], baked: Transform3D) {
+    debug_assert_eq!(
+        packed.len() % 12,
+        0,
+        "MultiMesh instance buffer must be a multiple of 12 floats"
+    );
+    for chunk in packed.chunks_exact_mut(12) {
+        let scatter_t = transform3d_from_floats12(chunk);
+        let composed = scatter_t * baked;
+        write_transform3d_floats12(chunk, composed);
+    }
+}
+
+/// Strips X and Z translation when `bake_xz` is false. Mirrors
+/// `mesh_source::bake_node_transform` but operates directly on
+/// `Transform3D` to avoid a NodeTrs round-trip at the call site.
+fn bake_transform3d(t: Transform3D, bake_xz: bool) -> Transform3D {
+    if bake_xz {
+        return t;
+    }
+    Transform3D::new(t.basis, Vector3::new(0.0, t.origin.y, 0.0))
 }
 
 /// Build placeholder scatter results sized to the number of enabled layers.
 /// This keeps worker outputs index-aligned with runtimes and MultiMesh children
 /// even when a given frame generates zero instances.
-fn zeroed_scatter_results(slot_count: usize) -> (Vec<Vec<f32>>, Vec<u32>) {
-    (vec![Vec::new(); slot_count], vec![0; slot_count])
+///
+/// The outer index is the scatter slot (one per enabled layer). The middle
+/// index is the per-slot variant; `variant_counts[slot]` controls how many
+/// inner buffers are pre-allocated for that slot. A slot with zero variants
+/// receives an empty inner Vec (kept so the outer slot index stays aligned
+/// with `WorkerState::scatter_runtimes`).
+fn zeroed_scatter_results(variant_counts: &[u32]) -> (Vec<Vec<Vec<f32>>>, Vec<Vec<u32>>) {
+    let scatter_buffers: Vec<Vec<Vec<f32>>> = variant_counts
+        .iter()
+        .map(|&n| vec![Vec::new(); n as usize])
+        .collect();
+    let scatter_instance_counts: Vec<Vec<u32>> = variant_counts
+        .iter()
+        .map(|&n| vec![0u32; n as usize])
+        .collect();
+    (scatter_buffers, scatter_instance_counts)
 }
 
 /// Counts the number of enabled scatter layers in a typed array, skipping null slots.
+#[cfg(test)]
 fn count_enabled_scatter_layers(arr: &Array<Gd<CesScatterLayerResource>>) -> usize {
     let flags: Vec<bool> = non_null_elements(arr)
         .iter()
@@ -186,6 +266,135 @@ fn layer_script_class(layer: &Gd<CesTextureLayerResource>) -> StringName {
     } else {
         StringName::default()
     }
+}
+
+/// One resolved variant from a scatter layer's `mesh_source`: the picked
+/// mesh and the baked per-instance pre-transform extracted from that pick's
+/// glTF node TRS.
+struct ResolvedVariant {
+    mesh: Gd<Mesh>,
+    /// Optional node name from the source's `picks` array, used to build a
+    /// readable child node name (`ScatterLayer{i}_Variant{v}_{node_name}`).
+    node_name: Option<String>,
+    baked: Transform3D,
+}
+
+/// Resolves a scatter layer's `mesh_source` resource (if set) to one entry
+/// per `enabled = true` pick: the picked mesh + a baked per-instance
+/// pre-transform. Returns an empty vec if `mesh_source` is unset, points to
+/// a null gltf, or all picks are disabled.
+///
+/// Order: matches the `picks` array order (which mirrors the glTF child
+/// order). Today only `CesMeshSourceGltf` is supported; other subclasses
+/// produce an empty vec.
+///
+/// The instantiated scene root is created exactly once and freed at the end
+/// so multi-variant resolution doesn't pay an N-times instantiate cost.
+fn resolve_mesh_source_variants(layer_gd: &Gd<Resource>) -> Vec<ResolvedVariant> {
+    use crate::mesh_source::all_enabled_pick_indices;
+    use godot::classes::{MeshInstance3D, PackedScene};
+
+    let source_var = layer_gd.get("mesh_source");
+    if source_var.is_nil() {
+        return Vec::new();
+    }
+    let Ok(source) = source_var.try_to::<Gd<Resource>>() else {
+        return Vec::new();
+    };
+
+    // Discriminate by script class — same pattern as layer_script_class.
+    let script_var = source.get("script");
+    let Ok(script) = script_var.try_to::<Gd<Script>>() else {
+        return Vec::new();
+    };
+    if script.get_global_name() != StringName::from("CesMeshSourceGltf") {
+        return Vec::new();
+    }
+
+    let gltf_var = source.get("gltf");
+    if gltf_var.is_nil() {
+        return Vec::new();
+    }
+    let Ok(gltf) = gltf_var.try_to::<Gd<PackedScene>>() else {
+        return Vec::new();
+    };
+
+    let picks_var = source.get("picks");
+    if picks_var.is_nil() {
+        return Vec::new();
+    }
+    let Ok(picks) = picks_var.try_to::<Array<Gd<Resource>>>() else {
+        return Vec::new();
+    };
+
+    let bake_xz: bool = source
+        .get("bake_xz_translation")
+        .try_to::<bool>()
+        .unwrap_or(false);
+
+    // Walk the picks, collecting (index, enabled, node_name) tuples while
+    // we still have ergonomic access to the array. Names are matched
+    // against the instantiated scene below.
+    let picks_vec = non_null_elements(&picks);
+    let enabled_flags: Vec<bool> = picks_vec
+        .iter()
+        .map(|p| p.get("enabled").try_to::<bool>().unwrap_or(false))
+        .collect();
+    let enabled_indices = all_enabled_pick_indices(&enabled_flags);
+    if enabled_indices.is_empty() {
+        return Vec::new();
+    }
+    let chosen_names: Vec<StringName> = enabled_indices
+        .iter()
+        .filter_map(|&i| picks_vec[i].get("node_name").try_to::<StringName>().ok())
+        .collect();
+    if chosen_names.is_empty() {
+        return Vec::new();
+    }
+
+    // Instantiate the scene exactly once and walk children, picking out
+    // every MeshInstance3D whose name matches an enabled pick. We preserve
+    // the *pick* order (which mirrors the glTF child order in the editor),
+    // not the scene-graph traversal order.
+    let Some(mut root) = gltf.instantiate() else {
+        return Vec::new();
+    };
+
+    let mut found_by_name: std::collections::HashMap<StringName, (Gd<Mesh>, Transform3D)> =
+        std::collections::HashMap::new();
+    let children = root.get_children();
+    for child_var in children.iter_shared() {
+        let child_node: Gd<Node> = child_var;
+        let child_name: StringName = child_node.get_name().into();
+        if !chosen_names.contains(&child_name) {
+            continue;
+        }
+        let Ok(mi3d) = child_node.try_cast::<MeshInstance3D>() else {
+            continue;
+        };
+        let Some(mesh) = mi3d.get_mesh() else {
+            continue;
+        };
+        let node_t = mi3d.get_transform();
+        let baked = bake_transform3d(node_t, bake_xz);
+        found_by_name.entry(child_name).or_insert((mesh, baked));
+    }
+    root.queue_free();
+
+    // Emit in pick order, skipping any pick whose node_name didn't match a
+    // child in the instantiated scene (defensive — the editor UI should
+    // prevent this but we don't want a panic if it happens).
+    let mut variants: Vec<ResolvedVariant> = Vec::new();
+    for name in chosen_names.iter() {
+        if let Some((mesh, baked)) = found_by_name.remove(name) {
+            variants.push(ResolvedVariant {
+                mesh,
+                node_name: Some(name.to_string()),
+                baked,
+            });
+        }
+    }
+    variants
 }
 
 /// Formats a single scatter layer's contribution to the structure id.
@@ -361,6 +570,14 @@ fn read_show_snapshot_borders(
     fallback
 }
 
+/// One MultiMesh + baked per-instance transform pair for a single variant
+/// inside a scatter layer slot. A layer with N enabled picks produces N
+/// `ScatterVariant`s.
+pub(crate) struct ScatterVariant {
+    pub mmi: Gd<MultiMeshInstance3D>,
+    pub baked_transform: Transform3D,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct SettingsSnapshot {
     radius: f32,
@@ -412,12 +629,15 @@ struct MeshResult {
     snapshot_normal_main_rids: Vec<Rid>,
     snapshot_level_info: Vec<(Vector3, Vector3, Vector3, f32)>,
     snapshot_updated: bool,
-    /// One transform buffer per enabled scatter layer (same order as enabled layers).
-    /// Empty when no scatter work was done.
-    scatter_buffers: Vec<Vec<f32>>,
-    /// Number of transforms written per scatter layer (n_tris * density).
-    /// Parallel to `scatter_buffers`.
-    scatter_instance_counts: Vec<u32>,
+    /// Per-slot, per-variant transform buffers. Outer index is the scatter
+    /// slot (same order as enabled scatter layers). Middle index is the
+    /// variant within that slot (each variant becomes its own MultiMesh).
+    /// Inner is the packed mat3x4 float buffer. Empty when no scatter work
+    /// was done.
+    scatter_buffers: Vec<Vec<Vec<f32>>>,
+    /// Number of transforms written per (slot, variant). Outer/middle index
+    /// alignment matches `scatter_buffers`.
+    scatter_instance_counts: Vec<Vec<u32>>,
     /// Worker-side timing snapshot for this frame. None when timing disabled.
     timing: Option<crate::perf::TimingTree>,
     /// Experimental shared position texture written on the worker/local RD and
@@ -463,6 +683,10 @@ struct WorkerConfig {
     /// worker returns before running the expensive mesh-generation path.
     debug_return_early_from_process: bool,
     scatter_params: Vec<ScatterParams>,
+    /// Per-slot total variant count (number of enabled glTF picks; 1 for
+    /// legacy single-mesh). Parallel to `scatter_params`. Drives the
+    /// N-dispatch loop in the worker thread.
+    scatter_variant_counts: Vec<u32>,
 }
 
 struct WorkerState {
@@ -665,9 +889,14 @@ pub struct CesCelestialRust {
     structural_dirty: bool,
     /// Instance IDs of layers whose "changed" signal we are currently connected to.
     connected_layer_ids: Vec<i64>,
-    /// One `MultiMeshInstance3D` child per enabled scatter layer.
-    /// `None` for layers without a mesh (index alignment preserved).
-    scatter_mmi_nodes: Vec<Option<Gd<MultiMeshInstance3D>>>,
+    /// Per scatter layer slot: the N variants spawned for that layer.
+    /// Outer index is the slot (one per enabled scatter layer) and must
+    /// stay aligned with `WorkerState::scatter_runtimes` and
+    /// `MeshResult::scatter_buffers`. Inner is one entry per variant.
+    /// `variants.is_empty()` means the layer is disabled or has no mesh.
+    /// `variants.len() == 1` for legacy single-mesh; `>= 1` for glTF with
+    /// multiple enabled picks.
+    scatter_slots: Vec<Vec<ScatterVariant>>,
     /// Blue-noise Texture3D built once per active `CesScatterMaskTextureLayer`.
     blue_noise_texture: Option<Gd<ImageTexture3D>>,
     /// Raw R8 blue-noise bytes (length = noise_dim^3). Loaded once and shared
@@ -760,7 +989,7 @@ impl INode3D for CesCelestialRust {
             layers_dirty: false,
             structural_dirty: false,
             connected_layer_ids: Vec::new(),
-            scatter_mmi_nodes: Vec::new(),
+            scatter_slots: Vec::new(),
             blue_noise_texture: None,
             blue_noise_bytes: Vec::new(),
             scatter_mask_noise_strength: 1.0,
@@ -1807,6 +2036,7 @@ impl CesCelestialRust {
                 .experimental_vertex_position_texture_spike,
             debug_return_early_from_process: self.debug_return_early_from_process,
             scatter_params: read_enabled_scatter_layer_params(&self.scatter_layers),
+            scatter_variant_counts: self.scatter_variant_counts(),
         };
 
         if let Some(ref work_tx) = self.work_tx {
@@ -1869,36 +2099,46 @@ impl CesCelestialRust {
             self.vertex_position_texture_size = Vector2::new(1.0, 1.0);
         }
 
-        // Apply scatter transforms to per-layer MultiMeshInstance3D children.
-        // Missing result entries are treated as zero-instance slots so stale
-        // MultiMesh counts are cleared instead of lingering on screen.
+        // Apply scatter transforms to per-(slot, variant) MultiMeshInstance3D
+        // children. Missing result entries are treated as zero-instance slots
+        // so stale MultiMesh counts are cleared instead of lingering on screen.
         {
             let _g = crate::perf::ThreadScope::enter("apply_scatter_mm");
-            for (i, mmi_opt) in self.scatter_mmi_nodes.iter().enumerate() {
-                let Some(ref mmi) = mmi_opt else {
-                    continue;
-                };
-                let Some(mut mm) = mmi.get_multimesh() else {
-                    continue;
-                };
-                let instance_count =
-                    result.scatter_instance_counts.get(i).copied().unwrap_or(0) as i32;
-                if mm.get_instance_count() != instance_count {
-                    mm.set_instance_count(instance_count);
+            for (slot_idx, variants) in self.scatter_slots.iter().enumerate() {
+                let slot_buffers = result.scatter_buffers.get(slot_idx);
+                let slot_counts = result.scatter_instance_counts.get(slot_idx);
+                for (v_idx, variant) in variants.iter().enumerate() {
+                    let Some(mut mm) = variant.mmi.get_multimesh() else {
+                        continue;
+                    };
+                    let instance_count = slot_counts
+                        .and_then(|c| c.get(v_idx))
+                        .copied()
+                        .unwrap_or(0) as i32;
+                    if mm.get_instance_count() != instance_count {
+                        mm.set_instance_count(instance_count);
+                    }
+                    if instance_count == 0 {
+                        continue;
+                    }
+                    let Some(buf) = slot_buffers.and_then(|s| s.get(v_idx)) else {
+                        continue;
+                    };
+                    if buf.is_empty() {
+                        continue;
+                    }
+                    let baked = variant.baked_transform;
+                    let packed = if baked == Transform3D::IDENTITY {
+                        PackedFloat32Array::from(buf.as_slice())
+                    } else {
+                        let mut owned: Vec<f32> = buf.clone();
+                        apply_baked_transform_in_place(&mut owned, baked);
+                        PackedFloat32Array::from(owned.as_slice())
+                    };
+                    let layer_label = format!("set_buffer_slot_{slot_idx}_variant_{v_idx}");
+                    let _g2 = crate::perf::ThreadScope::enter(&layer_label);
+                    mm.set_buffer(&packed);
                 }
-                if instance_count == 0 {
-                    continue;
-                }
-                let Some(buf) = result.scatter_buffers.get(i) else {
-                    continue;
-                };
-                if buf.is_empty() {
-                    continue;
-                }
-                let packed = PackedFloat32Array::from(buf.as_slice());
-                let layer_label = format!("set_buffer_layer_{i}");
-                let _g2 = crate::perf::ThreadScope::enter(&layer_label);
-                mm.set_buffer(&packed);
             }
         }
 
@@ -2601,9 +2841,26 @@ impl CesCelestialRust {
 
                 // Dispatch scatter runtimes. Triangle-indexed: one thread per
                 // triangle of the LOD mesh, filtered to `subdivision_level`.
+                // For layers with N>1 variants we dispatch N times (one per
+                // variant_id), and the shader filters each dispatch to the
+                // triangles hashing to that variant. This reuses the existing
+                // single-counter buffer layout — N dispatches, N readbacks.
                 let scatter_slot_count = worker.scatter_runtimes.len();
+                // Variant counts parallel to scatter_runtimes; fall back to 1
+                // for any slot the config didn't populate (shouldn't happen,
+                // but keeps the indexing safe).
+                let scatter_variant_counts: Vec<u32> = (0..scatter_slot_count)
+                    .map(|i| {
+                        config
+                            .scatter_variant_counts
+                            .get(i)
+                            .copied()
+                            .filter(|&n| n > 0)
+                            .unwrap_or(1)
+                    })
+                    .collect();
                 let (mut scatter_buffers, mut scatter_instance_counts) =
-                    zeroed_scatter_results(scatter_slot_count);
+                    zeroed_scatter_results(&scatter_variant_counts);
                 if scatter_slot_count > 0 {
                     let WorkerState {
                         ref mut rd,
@@ -2636,43 +2893,57 @@ impl CesCelestialRust {
                             }
                             let _scatter_root = crate::perf::ThreadScope::enter("scatter");
                             for (slot, runtime) in scatter_runtimes.iter_mut().enumerate() {
-                                let layer_params = config
+                                let variant_count = scatter_variant_counts[slot];
+                                let base_params = config
                                     .scatter_params
                                     .get(slot)
                                     .copied()
                                     .unwrap_or_else(|| *runtime.params());
-                                let params = scatter_params_with_runtime_context(
-                                    layer_params,
-                                    config.radius,
-                                );
-                                runtime.set_params(params);
                                 runtime.set_force_shrink_each_dispatch(
                                     config.scatter_force_shrink_each_dispatch,
                                 );
                                 runtime.init_pipeline(rd);
                                 let layer_label = format!("layer_{slot}");
                                 let _layer_scope = crate::perf::ThreadScope::enter(&layer_label);
-                                {
-                                    let _g = crate::perf::ThreadScope::enter("dispatch");
-                                    runtime.dispatch(rd, &tp_for_scatter, state);
-                                }
-                                let count = {
-                                    let _g = crate::perf::ThreadScope::enter("readback_count");
-                                    runtime.readback_count(rd)
-                                };
-                                {
-                                    let _g = crate::perf::ThreadScope::enter("readback_compact");
-                                    scatter_buffers[slot] = runtime.readback_compact(rd, count);
-                                }
-                                scatter_instance_counts[slot] = count;
-                                if config.show_debug_messages {
-                                    godot_print!(
-                                        "[CesCelestialRust] Scatter layer {} (level {}): {} instances spawned (n_tris={})",
-                                        slot,
-                                        params.subdivision_level,
-                                        count,
-                                        state.n_tris
+
+                                for variant_id in 0..variant_count {
+                                    let mut params = scatter_params_with_runtime_context(
+                                        base_params,
+                                        config.radius,
                                     );
+                                    params.variant_id = variant_id;
+                                    params.variant_count = variant_count;
+                                    runtime.set_params(params);
+
+                                    let variant_label = format!("variant_{variant_id}");
+                                    let _variant_scope =
+                                        crate::perf::ThreadScope::enter(&variant_label);
+                                    {
+                                        let _g = crate::perf::ThreadScope::enter("dispatch");
+                                        runtime.dispatch(rd, &tp_for_scatter, state);
+                                    }
+                                    let count = {
+                                        let _g = crate::perf::ThreadScope::enter("readback_count");
+                                        runtime.readback_count(rd)
+                                    };
+                                    {
+                                        let _g =
+                                            crate::perf::ThreadScope::enter("readback_compact");
+                                        scatter_buffers[slot][variant_id as usize] =
+                                            runtime.readback_compact(rd, count);
+                                    }
+                                    scatter_instance_counts[slot][variant_id as usize] = count;
+                                    if config.show_debug_messages {
+                                        godot_print!(
+                                            "[CesCelestialRust] Scatter layer {} variant {}/{} (level {}): {} instances spawned (n_tris={})",
+                                            slot,
+                                            variant_id,
+                                            variant_count,
+                                            params.subdivision_level,
+                                            count,
+                                            state.n_tris
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -2850,62 +3121,132 @@ impl CesCelestialRust {
         runtimes
     }
 
-    /// Create a `MultiMeshInstance3D` child per enabled scatter layer. Layers
-    /// with no mesh assigned still get a slot (as `None`) so indexes align
-    /// with `WorkerState::scatter_runtimes` and `MeshResult::scatter_buffers`.
+    /// Build the per-slot variant list. For each enabled scatter layer:
+    /// - If `mesh_source` resolves to N variants (one per enabled glTF
+    ///   pick), spawn N `MultiMeshInstance3D` children — one per variant.
+    /// - Else if the legacy `mesh` field is set, spawn 1 MMI with an
+    ///   identity baked transform.
+    /// - Else push an empty inner Vec for the slot.
+    ///
+    /// The outer index aligns with `WorkerState::scatter_runtimes` and
+    /// `MeshResult::scatter_buffers`; the inner index aligns with the
+    /// `variant_id` passed to the shader.
     fn build_scatter_mmi_children(&mut self) {
         self.destroy_scatter_mmi_children();
-        let enabled_layer_count = count_enabled_scatter_layers(&self.scatter_layers);
         let enabled_layers: Vec<Gd<CesScatterLayerResource>> =
             non_null_elements(&self.scatter_layers)
                 .into_iter()
                 .filter(|l| l.bind().enabled)
                 .collect();
 
-        let mut new_nodes: Vec<Option<Gd<MultiMeshInstance3D>>> =
-            Vec::with_capacity(enabled_layer_count);
+        let mut new_slots: Vec<Vec<ScatterVariant>> = Vec::with_capacity(enabled_layers.len());
         for (i, layer_gd) in enabled_layers.iter().enumerate() {
-            let mesh_var = layer_gd.get("mesh");
-            let mesh_opt: Option<Gd<Mesh>> = if mesh_var.is_nil() {
-                None
+            // Upcast to plain Resource so we can read `mesh_source` (a property
+            // on the GDScript subclass that gdext doesn't see on the Rust base).
+            let layer_resource: Gd<Resource> = layer_gd.clone().upcast::<Resource>();
+
+            // mesh_source takes precedence; falls back to the legacy `mesh` field.
+            let resolved = resolve_mesh_source_variants(&layer_resource);
+            let variants_to_spawn: Vec<(Gd<Mesh>, Option<String>, Transform3D)> = if !resolved
+                .is_empty()
+            {
+                resolved
+                    .into_iter()
+                    .map(|v| (v.mesh, v.node_name, v.baked))
+                    .collect()
             } else {
-                mesh_var.try_to::<Option<Gd<Mesh>>>().ok().flatten()
-            };
-            let Some(mesh) = mesh_opt else {
-                new_nodes.push(None);
-                continue;
-            };
-
-            let mut mmi = MultiMeshInstance3D::new_alloc();
-            mmi.set_name(&format!("ScatterLayer{}", i));
-
-            let mut mm = MultiMesh::new_gd();
-            mm.set_transform_format(TransformFormat::TRANSFORM_3D);
-            mm.set_mesh(&mesh);
-            mm.set_instance_count(0);
-            mmi.set_multimesh(&mm);
-
-            let material_var = layer_gd.get("material");
-            if !material_var.is_nil() {
-                if let Ok(Some(material)) = material_var.try_to::<Option<Gd<Material>>>() {
-                    mmi.set_material_override(&material);
+                let mesh_var = layer_gd.get("mesh");
+                let mesh_opt: Option<Gd<Mesh>> = if mesh_var.is_nil() {
+                    None
+                } else {
+                    mesh_var.try_to::<Option<Gd<Mesh>>>().ok().flatten()
+                };
+                match mesh_opt {
+                    Some(mesh) => vec![(mesh, None, Transform3D::IDENTITY)],
+                    None => Vec::new(),
                 }
+            };
+
+            if variants_to_spawn.is_empty() {
+                new_slots.push(Vec::new());
+                continue;
             }
 
-            self.base_mut().add_child(&mmi);
-            new_nodes.push(Some(mmi));
+            // Read the material once per layer — all variants share it.
+            let material_var = layer_gd.get("material");
+            let material_opt: Option<Gd<Material>> = if material_var.is_nil() {
+                None
+            } else {
+                material_var
+                    .try_to::<Option<Gd<Material>>>()
+                    .ok()
+                    .flatten()
+            };
+
+            let mut variants: Vec<ScatterVariant> = Vec::with_capacity(variants_to_spawn.len());
+            for (v_idx, (mesh, node_name, baked)) in variants_to_spawn.into_iter().enumerate() {
+                let mut mmi = MultiMeshInstance3D::new_alloc();
+                let label = match &node_name {
+                    Some(name) => format!("ScatterLayer{}_Variant{}_{}", i, v_idx, name),
+                    None => format!("ScatterLayer{}_Variant{}", i, v_idx),
+                };
+                mmi.set_name(&label);
+
+                let mut mm = MultiMesh::new_gd();
+                mm.set_transform_format(TransformFormat::TRANSFORM_3D);
+                mm.set_mesh(&mesh);
+                mm.set_instance_count(0);
+                mmi.set_multimesh(&mm);
+
+                // Note: `set_lod_bias` is a no-op on `MultiMeshInstance3D`
+                // in Godot 4 — the renderer picks a single LOD for the MMI
+                // from its AABB, not per-instance, and at scatter scale the
+                // AABB always picks LOD0. Empirical test on this codebase
+                // (bias=0.01 vs 1.0) showed no FPS or visual delta. Real
+                // wins for dense scatter come from baking decimation into
+                // the source mesh (see rust/src/bin/decimate_gltf.rs) and
+                // disabling shadow casting below.
+
+                // Disable shadow casting: each rock instance otherwise
+                // renders twice (shadow pass + main pass), and shadows from
+                // tiny scattered props rarely contribute visually at this
+                // density. Tunable per scatter layer is a follow-up.
+                use godot::classes::geometry_instance_3d::ShadowCastingSetting;
+                mmi.set_cast_shadows_setting(ShadowCastingSetting::OFF);
+
+                if let Some(ref material) = material_opt {
+                    mmi.set_material_override(material);
+                }
+
+                self.base_mut().add_child(&mmi);
+                variants.push(ScatterVariant {
+                    mmi,
+                    baked_transform: baked,
+                });
+            }
+            new_slots.push(variants);
         }
-        self.scatter_mmi_nodes = new_nodes;
+        self.scatter_slots = new_slots;
     }
 
     /// Free all existing scatter MMI3D children. Safe to call multiple times.
     fn destroy_scatter_mmi_children(&mut self) {
-        let nodes = std::mem::take(&mut self.scatter_mmi_nodes);
+        let slots = std::mem::take(&mut self.scatter_slots);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            for mut mmi in nodes.into_iter().flatten() {
-                mmi.queue_free();
+            for variants in slots.into_iter() {
+                for variant in variants.into_iter() {
+                    let ScatterVariant { mut mmi, .. } = variant;
+                    mmi.queue_free();
+                }
             }
         }));
+    }
+
+    /// Returns the per-slot variant count parallel to `scatter_slots`.
+    /// Used to drive the N-dispatch loop on the worker thread and the
+    /// per-variant readback. A slot with zero variants reports `0`.
+    fn scatter_variant_counts(&self) -> Vec<u32> {
+        self.scatter_slots.iter().map(|v| v.len() as u32).collect()
     }
 
     /// Connect the `Resource.changed` signal on all active layers so that
@@ -3067,6 +3408,105 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_baked_identity_is_noop() {
+        use godot::prelude::Transform3D;
+        let original: Vec<f32> = vec![
+            1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 6.0, 0.0, 0.0, 1.0, 7.0, 0.5, 0.5, 0.5, 2.5, -0.5,
+            0.5, -0.5, 3.5, 0.0, 0.0, 1.0, 4.5,
+        ];
+        let mut buf = original.clone();
+        super::apply_baked_transform_in_place(&mut buf, Transform3D::IDENTITY);
+        // Allow tiny floating-point drift from the unpack/repack round trip.
+        for (i, (got, want)) in buf.iter().zip(original.iter()).enumerate() {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "float {i}: got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_baked_composes_correctly() {
+        use godot::prelude::{Basis, Transform3D, Vector3};
+
+        // scatter_t = identity rotation, origin (10, 20, 30)
+        let scatter_t = Transform3D::new(Basis::IDENTITY, Vector3::new(10.0, 20.0, 30.0));
+        // baked = uniform scale 2x, origin (1, 2, 3)
+        let baked = Transform3D::new(
+            Basis::from_scale(Vector3::new(2.0, 2.0, 2.0)),
+            Vector3::new(1.0, 2.0, 3.0),
+        );
+
+        let mut buf: Vec<f32> = vec![0.0; 12];
+        super::write_transform3d_floats12(&mut buf, scatter_t);
+        super::apply_baked_transform_in_place(&mut buf, baked);
+
+        let composed = super::transform3d_from_floats12(&buf);
+        let expected = scatter_t * baked;
+
+        for i in 0..3 {
+            assert!(
+                (composed.basis.rows[i] - expected.basis.rows[i]).length() < 1e-5,
+                "basis row {i}: got {:?}, want {:?}",
+                composed.basis.rows[i],
+                expected.basis.rows[i],
+            );
+        }
+        assert!(
+            (composed.origin - expected.origin).length() < 1e-5,
+            "origin: got {:?}, want {:?}",
+            composed.origin,
+            expected.origin,
+        );
+        // Sanity: a point at origin transformed by (scatter * baked) should be
+        // scatter.origin + scatter.basis * baked.origin (= 10+1, 20+2, 30+3).
+        assert!(
+            (composed.origin - Vector3::new(11.0, 22.0, 33.0)).length() < 1e-5,
+            "expected origin (11, 22, 33), got {:?}",
+            composed.origin,
+        );
+    }
+
+    #[test]
+    fn test_apply_baked_empty_buffer_is_noop() {
+        use godot::prelude::Transform3D;
+        let mut buf: Vec<f32> = Vec::new();
+        super::apply_baked_transform_in_place(&mut buf, Transform3D::IDENTITY);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_transform3d_round_trip_through_floats12() {
+        use godot::prelude::{Basis, Transform3D, Vector3};
+        let original = Transform3D::new(
+            Basis::from_rows(
+                Vector3::new(0.1, 0.2, 0.3),
+                Vector3::new(0.4, 0.5, 0.6),
+                Vector3::new(0.7, 0.8, 0.9),
+            ),
+            Vector3::new(11.0, 22.0, 33.0),
+        );
+        let mut buf: Vec<f32> = vec![0.0; 12];
+        super::write_transform3d_floats12(&mut buf, original);
+        let restored = super::transform3d_from_floats12(&buf);
+
+        for i in 0..3 {
+            assert!(
+                (restored.basis.rows[i] - original.basis.rows[i]).length() < 1e-6,
+                "basis row {i}: got {:?}, want {:?}",
+                restored.basis.rows[i],
+                original.basis.rows[i],
+            );
+        }
+        assert!(
+            (restored.origin - original.origin).length() < 1e-6,
+            "origin: got {:?}, want {:?}",
+            restored.origin,
+            original.origin,
+        );
+    }
+
+    #[test]
     fn test_count_enabled_flags_empty() {
         assert_eq!(super::count_enabled_flags(&[]), 0);
     }
@@ -3114,13 +3554,40 @@ mod tests {
     fn scatter_child_count_matches_enabled_layers() {
         let enabled_flags = [true, false, true, true, false];
         let enabled_count = super::count_enabled_flags(&enabled_flags);
+        // One variant per enabled layer (legacy single-mesh case).
+        let variant_counts: Vec<u32> = vec![1; enabled_count];
         let (scatter_buffers, scatter_instance_counts) =
-            super::zeroed_scatter_results(enabled_count);
+            super::zeroed_scatter_results(&variant_counts);
 
         assert_eq!(enabled_count, 3);
         assert_eq!(scatter_buffers.len(), enabled_count);
-        assert_eq!(scatter_instance_counts, vec![0, 0, 0]);
-        assert!(scatter_buffers.iter().all(|buf| buf.is_empty()));
+        assert_eq!(scatter_instance_counts.len(), enabled_count);
+        // Each slot has exactly one variant slot, all zeroed.
+        assert!(scatter_buffers
+            .iter()
+            .all(|slot| slot.len() == 1 && slot[0].is_empty()));
+        assert!(scatter_instance_counts
+            .iter()
+            .all(|slot| slot == &vec![0u32]));
+    }
+
+    #[test]
+    fn zeroed_scatter_results_handles_multi_variant_slots() {
+        // Three slots: 2 variants, 1 variant, 0 variants (disabled / no mesh).
+        let counts = [2u32, 1, 0];
+        let (buffers, instance_counts) = super::zeroed_scatter_results(&counts);
+
+        assert_eq!(buffers.len(), 3);
+        assert_eq!(buffers[0].len(), 2);
+        assert_eq!(buffers[1].len(), 1);
+        assert_eq!(buffers[2].len(), 0);
+        assert!(buffers[0].iter().all(|v| v.is_empty()));
+        assert!(buffers[1].iter().all(|v| v.is_empty()));
+
+        assert_eq!(instance_counts.len(), 3);
+        assert_eq!(instance_counts[0], vec![0u32, 0u32]);
+        assert_eq!(instance_counts[1], vec![0u32]);
+        assert!(instance_counts[2].is_empty());
     }
 
     #[test]

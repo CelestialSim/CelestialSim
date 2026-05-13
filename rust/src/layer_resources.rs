@@ -42,3 +42,12 @@ pub struct CesScatterLayerResource {
     #[init(val = true)]
     pub enabled: bool,
 }
+
+/// Base resource for a mesh source consumed by `CesScatterLayer`. Concrete
+/// behavior (single mesh, glTF child picker, etc.) lives in GDScript
+/// subclasses, discriminated in Rust via `script.get_global_name()`.
+#[derive(GodotClass)]
+#[class(tool, init, base = Resource)]
+pub struct CesMeshSourceResource {
+    base: Base<Resource>,
+}
