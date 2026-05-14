@@ -29,6 +29,11 @@ extends CesScatterLayerResource
 		material = v
 		emit_changed()
 
+## When true, this scatter layer renders via direct RenderingServer instances
+## (one per scattered object) instead of MultiMeshInstance3D. Trades batched
+## draw for per-instance frustum culling and per-instance LOD.
+@export var use_rendering_server: bool = false
+
 ## Triangles at this LOD level (and only this level) host scatter candidates.
 ## Higher = more triangles = more potential spawns. Trees stay anchored as the
 ## adaptive LOD subdivides FURTHER (children at level+1 don't replace parents),

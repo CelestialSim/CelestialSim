@@ -96,6 +96,91 @@ fn write_transform3d_floats12(chunk: &mut [f32], t: Transform3D) {
     chunk[11] = t.origin.z;
 }
 
+#[allow(dead_code)]
+fn transform3d_iter_from_floats12(buf: &[f32]) -> impl Iterator<Item = Transform3D> + '_ {
+    debug_assert!(
+        buf.len() % 12 == 0,
+        "buffer length must be a multiple of 12"
+    );
+    buf.chunks_exact(12).map(transform3d_from_floats12)
+}
+
+// Order matches `apply_baked_transform_in_place`: per_instance * baked is the
+// existing convention; planet wraps it as the outermost transform.
+#[allow(dead_code)]
+fn compose_scatter_transform(
+    planet: Transform3D,
+    baked: Transform3D,
+    per_instance: Transform3D,
+) -> Transform3D {
+    planet * per_instance * baked
+}
+
+#[allow(dead_code)]
+fn resize_routing_flags(target_len: usize) -> Vec<bool> {
+    vec![false; target_len]
+}
+
+/// Defensively reads a `use_rendering_server`-style flag from a `Variant`.
+/// Returns the inner bool if the variant holds one; otherwise `false` (covers
+/// nil, missing-property, and wrong-type cases). The actual conversion is
+/// delegated to `read_use_rs_from_opt` so the defensive-default behavior is
+/// unit-testable without a Godot runtime (Variant construction requires one).
+fn read_use_rs(variant: Variant) -> bool {
+    read_use_rs_from_opt(variant.try_to::<bool>().ok())
+}
+
+/// Pure core of `read_use_rs`: maps the `try_to::<bool>()` result to the
+/// final flag value, defaulting to `false` when conversion failed (nil or
+/// wrong-type variant).
+fn read_use_rs_from_opt(parsed: Option<bool>) -> bool {
+    parsed.unwrap_or(false)
+}
+
+/// Grow or shrink a `Vec<Rid>` to `target_len` by invoking the user-supplied
+/// alloc/free callbacks. Used by the RenderingServer scatter path to keep
+/// the per-variant instance pool sized to the worker's instance count.
+/// - Grow: `alloc()` is called repeatedly until `pool.len() == target_len`.
+/// - Shrink: each excess RID is popped from the back and passed to `free()`.
+/// - Equal: no callbacks fire.
+#[allow(dead_code)]
+fn rid_pool_sync_size(
+    pool: &mut Vec<Rid>,
+    target_len: usize,
+    mut alloc: impl FnMut() -> Rid,
+    mut free: impl FnMut(Rid),
+) {
+    while pool.len() < target_len {
+        pool.push(alloc());
+    }
+    while pool.len() > target_len {
+        if let Some(rid) = pool.pop() {
+            free(rid);
+        }
+    }
+}
+
+/// Zips each `Rid` with the matching `Transform3D` decoded from `buffer`,
+/// composing `planet * per_instance * baked` and invoking `set` once per
+/// pair. Pure helper extracted from the RS scatter apply path so the
+/// composition order can be unit-tested without a `RenderingServer`.
+#[allow(dead_code)]
+fn apply_rs_transforms(
+    rids: &[Rid],
+    buffer: &[f32],
+    planet: Transform3D,
+    baked: Transform3D,
+    mut set: impl FnMut(Rid, Transform3D),
+) {
+    for (rid, per_instance) in rids
+        .iter()
+        .copied()
+        .zip(transform3d_iter_from_floats12(buffer))
+    {
+        set(rid, compose_scatter_transform(planet, baked, per_instance));
+    }
+}
+
 /// Post-multiplies each 12-float mat3x4 chunk in `packed` by `baked` so
 /// rendered instances appear at `scatter_t * baked_node_t`. The buffer
 /// layout is row-major mat3x4 (per Godot MultiMesh::set_buffer convention).
@@ -578,6 +663,18 @@ pub(crate) struct ScatterVariant {
     pub baked_transform: Transform3D,
 }
 
+/// RenderingServer-path variant: each instance is its own `RID` (no
+/// `MultiMeshInstance3D`). Used for slots routed through the RS path in
+/// Phase 2. `instance_rids` is grown/shrunk by `rid_pool_sync_size` each
+/// apply. `material_rid` is `None` when the layer's `material` is unset
+/// (skip `instance_geometry_set_material_override` in that case).
+pub(crate) struct ScatterRsVariant {
+    pub mesh_rid: Rid,
+    pub instance_rids: Vec<Rid>,
+    pub baked_transform: Transform3D,
+    pub material_rid: Option<Rid>,
+}
+
 #[derive(Clone, Copy, PartialEq)]
 struct SettingsSnapshot {
     radius: f32,
@@ -897,6 +994,21 @@ pub struct CesCelestialRust {
     /// `variants.len() == 1` for legacy single-mesh; `>= 1` for glTF with
     /// multiple enabled picks.
     scatter_slots: Vec<Vec<ScatterVariant>>,
+    /// Parallel to `scatter_slots`: per-slot flag indicating whether that
+    /// slot's instances are rendered via direct `RenderingServer` instances
+    /// (Phase 2) instead of the `MultiMeshInstance3D` child. All `false` in
+    /// Phase 1 — wiring only.
+    scatter_slot_uses_rs: Vec<bool>,
+    /// Parallel to `scatter_slots`: for slots routed through the
+    /// RenderingServer path, holds per-variant mesh/material RIDs and the
+    /// pool of live instance RIDs. For slots on the MMI path the inner Vec
+    /// is empty (and the corresponding `scatter_slots` entry holds the
+    /// variants instead).
+    scatter_slots_rs: Vec<Vec<ScatterRsVariant>>,
+    /// Cached scenario RID captured during `build_scatter_mmi_children` so
+    /// the apply path can call `instance_create2` without re-querying
+    /// `World3D` every frame. `Rid::Invalid` until first build.
+    scenario_rid: Rid,
     /// Blue-noise Texture3D built once per active `CesScatterMaskTextureLayer`.
     blue_noise_texture: Option<Gd<ImageTexture3D>>,
     /// Raw R8 blue-noise bytes (length = noise_dim^3). Loaded once and shared
@@ -990,6 +1102,9 @@ impl INode3D for CesCelestialRust {
             structural_dirty: false,
             connected_layer_ids: Vec::new(),
             scatter_slots: Vec::new(),
+            scatter_slot_uses_rs: Vec::new(),
+            scatter_slots_rs: Vec::new(),
+            scenario_rid: Rid::Invalid,
             blue_noise_texture: None,
             blue_noise_bytes: Vec::new(),
             scatter_mask_noise_strength: 1.0,
@@ -2104,6 +2219,62 @@ impl CesCelestialRust {
         // so stale MultiMesh counts are cleared instead of lingering on screen.
         {
             let _g = crate::perf::ThreadScope::enter("apply_scatter_mm");
+
+            // RS-routed slots: grow/shrink instance RID pools and push
+            // composed transforms via RenderingServer. Planet transform is
+            // captured once per apply (planet is static).
+            let planet_xform = self.base().get_global_transform();
+            let scenario = self.scenario_rid;
+            for (slot_idx, rs_variants) in self.scatter_slots_rs.iter_mut().enumerate() {
+                if rs_variants.is_empty() {
+                    continue;
+                }
+                let slot_buffers = result.scatter_buffers.get(slot_idx);
+                let slot_counts = result.scatter_instance_counts.get(slot_idx);
+                for (v_idx, variant) in rs_variants.iter_mut().enumerate() {
+                    let target_count = slot_counts
+                        .and_then(|c| c.get(v_idx))
+                        .copied()
+                        .unwrap_or(0) as usize;
+                    let mesh_rid = variant.mesh_rid;
+                    let material_rid = variant.material_rid;
+                    rid_pool_sync_size(
+                        &mut variant.instance_rids,
+                        target_count,
+                        || {
+                            let mut rs = RenderingServer::singleton();
+                            let rid = rs.instance_create2(mesh_rid, scenario);
+                            rs.instance_geometry_set_cast_shadows_setting(
+                                rid,
+                                godot::classes::rendering_server::ShadowCastingSetting::OFF,
+                            );
+                            if let Some(mat) = material_rid {
+                                rs.instance_geometry_set_material_override(rid, mat);
+                            }
+                            rid
+                        },
+                        |rid| RenderingServer::singleton().free_rid(rid),
+                    );
+                    if target_count == 0 {
+                        continue;
+                    }
+                    let Some(buf) = slot_buffers.and_then(|s| s.get(v_idx)) else {
+                        continue;
+                    };
+                    if buf.is_empty() {
+                        continue;
+                    }
+                    let mut rs = RenderingServer::singleton();
+                    apply_rs_transforms(
+                        &variant.instance_rids,
+                        buf,
+                        planet_xform,
+                        variant.baked_transform,
+                        |rid, t| rs.instance_set_transform(rid, t),
+                    );
+                }
+            }
+
             for (slot_idx, variants) in self.scatter_slots.iter().enumerate() {
                 let slot_buffers = result.scatter_buffers.get(slot_idx);
                 let slot_counts = result.scatter_instance_counts.get(slot_idx);
@@ -3139,7 +3310,17 @@ impl CesCelestialRust {
                 .filter(|l| l.bind().enabled)
                 .collect();
 
+        // Capture scenario once — planet is static, no need to re-query per frame.
+        self.scenario_rid = self
+            .base()
+            .get_world_3d()
+            .expect("CesCelestialRust must be in a World3D")
+            .get_scenario();
+
         let mut new_slots: Vec<Vec<ScatterVariant>> = Vec::with_capacity(enabled_layers.len());
+        let mut new_slots_rs: Vec<Vec<ScatterRsVariant>> =
+            Vec::with_capacity(enabled_layers.len());
+        let mut new_uses_rs: Vec<bool> = Vec::with_capacity(enabled_layers.len());
         for (i, layer_gd) in enabled_layers.iter().enumerate() {
             // Upcast to plain Resource so we can read `mesh_source` (a property
             // on the GDScript subclass that gdext doesn't see on the Rust base).
@@ -3167,8 +3348,15 @@ impl CesCelestialRust {
                 }
             };
 
+            // Per-layer routing flag — exposed as `use_rendering_server` on
+            // the GDScript layer. Read once per layer so the empty-variants
+            // branch records the same flag value as the populated branch.
+            let uses_rs = read_use_rs(layer_gd.get("use_rendering_server"));
+
             if variants_to_spawn.is_empty() {
                 new_slots.push(Vec::new());
+                new_slots_rs.push(Vec::new());
+                new_uses_rs.push(uses_rs);
                 continue;
             }
 
@@ -3182,6 +3370,27 @@ impl CesCelestialRust {
                     .ok()
                     .flatten()
             };
+
+            // Phase 3: per-layer routing via `use_rendering_server` export.
+            // RS path = direct RenderingServer instances (per-instance
+            // frustum culling / LOD). MMI path = batched MultiMeshInstance3D.
+            if uses_rs {
+                let mut rs_variants: Vec<ScatterRsVariant> =
+                    Vec::with_capacity(variants_to_spawn.len());
+                for (mesh, _node_name, baked) in variants_to_spawn.into_iter() {
+                    let material_rid = material_opt.as_ref().map(|m| m.get_rid());
+                    rs_variants.push(ScatterRsVariant {
+                        mesh_rid: mesh.get_rid(),
+                        instance_rids: Vec::new(),
+                        baked_transform: baked,
+                        material_rid,
+                    });
+                }
+                new_slots.push(Vec::new());
+                new_slots_rs.push(rs_variants);
+                new_uses_rs.push(true);
+                continue;
+            }
 
             let mut variants: Vec<ScatterVariant> = Vec::with_capacity(variants_to_spawn.len());
             for (v_idx, (mesh, node_name, baked)) in variants_to_spawn.into_iter().enumerate() {
@@ -3225,18 +3434,38 @@ impl CesCelestialRust {
                 });
             }
             new_slots.push(variants);
+            new_slots_rs.push(Vec::new());
+            new_uses_rs.push(false);
         }
         self.scatter_slots = new_slots;
+        self.scatter_slots_rs = new_slots_rs;
+        self.scatter_slot_uses_rs = new_uses_rs;
     }
 
     /// Free all existing scatter MMI3D children. Safe to call multiple times.
     fn destroy_scatter_mmi_children(&mut self) {
+        self.scatter_slot_uses_rs.clear();
         let slots = std::mem::take(&mut self.scatter_slots);
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             for variants in slots.into_iter() {
                 for variant in variants.into_iter() {
                     let ScatterVariant { mut mmi, .. } = variant;
                     mmi.queue_free();
+                }
+            }
+        }));
+
+        // Free all RenderingServer-path instance RIDs. mesh_rid /
+        // material_rid are owned by the source Gd<Mesh> / Gd<Material>
+        // resources, so we do NOT free those here.
+        let rs_slots = std::mem::take(&mut self.scatter_slots_rs);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut rs = RenderingServer::singleton();
+            for variants in rs_slots.into_iter() {
+                for variant in variants.into_iter() {
+                    for rid in variant.instance_rids.into_iter() {
+                        rs.free_rid(rid);
+                    }
                 }
             }
         }));
@@ -3602,6 +3831,164 @@ mod tests {
         assert_eq!(updated.seed, 7);
         assert_eq!(updated.subdivision_level, 4);
         assert_eq!(updated.planet_radius, 42.5);
+    }
+
+    #[test]
+    fn transform3d_iter_from_floats12_yields_one_per_12_floats() {
+        let buf: Vec<f32> = vec![
+            1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 6.0, 0.0, 0.0, 1.0, 7.0, 0.5, 0.5, 0.5, 2.5, -0.5,
+            0.5, -0.5, 3.5, 0.0, 0.0, 1.0, 4.5,
+        ];
+        let got: Vec<_> = super::transform3d_iter_from_floats12(&buf).collect();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], super::transform3d_from_floats12(&buf[0..12]));
+        assert_eq!(got[1], super::transform3d_from_floats12(&buf[12..24]));
+    }
+
+    #[test]
+    fn transform3d_iter_from_floats12_handles_empty_buffer() {
+        let buf: Vec<f32> = Vec::new();
+        let got: Vec<_> = super::transform3d_iter_from_floats12(&buf).collect();
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn compose_scatter_transform_order_matches_current_baking_convention() {
+        use godot::prelude::{Basis, Transform3D, Vector3};
+        let planet = Transform3D::new(Basis::IDENTITY, Vector3::new(100.0, 0.0, 0.0));
+        let per_instance = Transform3D::new(Basis::IDENTITY, Vector3::new(0.0, 20.0, 0.0));
+        let baked = Transform3D::new(Basis::IDENTITY, Vector3::new(0.0, 0.0, 3.0));
+        let composed = super::compose_scatter_transform(planet, baked, per_instance);
+        // planet * per_instance * baked applied to origin = (100, 20, 3).
+        assert!((composed.origin - Vector3::new(100.0, 20.0, 3.0)).length() < 1e-5);
+    }
+
+    #[test]
+    fn resize_routing_flags_defaults_to_false() {
+        let flags = super::resize_routing_flags(4);
+        assert_eq!(flags.len(), 4);
+        assert!(flags.iter().all(|&f| !f));
+        assert!(super::resize_routing_flags(0).is_empty());
+    }
+
+    #[test]
+    fn rid_pool_grows_to_target_len_by_calling_alloc() {
+        let mut pool: Vec<Rid> = Vec::new();
+        let mut alloc_calls = 0u32;
+        let mut free_calls = 0u32;
+        let mut next_id = 1u64;
+        super::rid_pool_sync_size(
+            &mut pool,
+            3,
+            || {
+                alloc_calls += 1;
+                let r = Rid::new(next_id);
+                next_id += 1;
+                r
+            },
+            |_| free_calls += 1,
+        );
+        assert_eq!(alloc_calls, 3);
+        assert_eq!(free_calls, 0);
+        assert_eq!(pool.len(), 3);
+    }
+
+    #[test]
+    fn rid_pool_shrinks_to_target_len_by_calling_free() {
+        let mut pool: Vec<Rid> =
+            (1..=5).map(Rid::new).collect();
+        let mut alloc_calls = 0u32;
+        let mut free_calls = 0u32;
+        super::rid_pool_sync_size(
+            &mut pool,
+            2,
+            || {
+                alloc_calls += 1;
+                Rid::Invalid
+            },
+            |_| free_calls += 1,
+        );
+        assert_eq!(alloc_calls, 0);
+        assert_eq!(free_calls, 3);
+        assert_eq!(pool.len(), 2);
+    }
+
+    #[test]
+    fn rid_pool_target_len_zero_releases_all() {
+        let mut pool: Vec<Rid> = (1..=4).map(Rid::new).collect();
+        let mut free_calls = 0u32;
+        super::rid_pool_sync_size(&mut pool, 0, || Rid::Invalid, |_| free_calls += 1);
+        assert_eq!(free_calls, 4);
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn rid_pool_idempotent_when_already_at_target() {
+        let mut pool: Vec<Rid> = (1..=3).map(Rid::new).collect();
+        let mut alloc_calls = 0u32;
+        let mut free_calls = 0u32;
+        super::rid_pool_sync_size(
+            &mut pool,
+            3,
+            || {
+                alloc_calls += 1;
+                Rid::Invalid
+            },
+            |_| free_calls += 1,
+        );
+        assert_eq!(alloc_calls, 0);
+        assert_eq!(free_calls, 0);
+        assert_eq!(pool.len(), 3);
+    }
+
+    #[test]
+    fn apply_rs_transforms_zips_rids_and_buffer_into_set_calls() {
+        use godot::prelude::{Basis, Transform3D, Vector3};
+        let rids: Vec<Rid> = (1..=3).map(Rid::new).collect();
+        // 3 transforms: origins (5,6,7), (2.5,3.5,4.5), (0,0,0)
+        let buf: Vec<f32> = vec![
+            1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 6.0, 0.0, 0.0, 1.0, 7.0, // t0
+            1.0, 0.0, 0.0, 2.5, 0.0, 1.0, 0.0, 3.5, 0.0, 0.0, 1.0, 4.5, // t1
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, // t2
+        ];
+        let planet = Transform3D::new(Basis::IDENTITY, Vector3::new(100.0, 0.0, 0.0));
+        let baked = Transform3D::new(Basis::IDENTITY, Vector3::new(0.0, 0.0, 1.0));
+        let mut captured: Vec<(Rid, Transform3D)> = Vec::new();
+        super::apply_rs_transforms(&rids, &buf, planet, baked, |rid, t| {
+            captured.push((rid, t));
+        });
+        assert_eq!(captured.len(), 3);
+        for (i, per_inst) in super::transform3d_iter_from_floats12(&buf).enumerate() {
+            let expected = super::compose_scatter_transform(planet, baked, per_inst);
+            assert_eq!(captured[i].0, rids[i]);
+            assert!((captured[i].1.origin - expected.origin).length() < 1e-5);
+        }
+    }
+
+    // `Variant` construction requires a live Godot runtime, so these tests
+    // exercise the pure core (`read_use_rs_from_opt`) which receives the
+    // `try_to::<bool>().ok()` result instead of the Variant itself. The
+    // mapping is: bool→Some(bool), nil/wrong-type→None.
+
+    #[test]
+    fn read_use_rs_returns_true_for_bool_true_variant() {
+        assert!(super::read_use_rs_from_opt(Some(true)));
+    }
+
+    #[test]
+    fn read_use_rs_returns_false_for_bool_false_variant() {
+        assert!(!super::read_use_rs_from_opt(Some(false)));
+    }
+
+    #[test]
+    fn read_use_rs_returns_false_for_nil_variant() {
+        assert!(!super::read_use_rs_from_opt(None));
+    }
+
+    #[test]
+    fn read_use_rs_returns_false_for_non_bool_variant() {
+        // `Variant::from(42i64).try_to::<bool>()` would yield Err → None.
+        assert!(!super::read_use_rs_from_opt(None));
     }
 
     #[test]
