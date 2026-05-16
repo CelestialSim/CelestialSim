@@ -23,10 +23,25 @@
 //   7: StructuredBuffer<int>     t_deactivated  — non-zero → skip
 //   8: ConstantBuffer<uint>      n_tris         — number of valid triangles
 //   9: StructuredBuffer<uint>    blue_noise     — packed 4-bytes-per-uint cube; size = noise_dim^3 / 4
+//  10: StructuredBuffer<uint2>   t_tri_id       — stable per-triangle 64-bit ID (lo, hi packed as uint2)
+//  11: RWStructuredBuffer<uint2> out_tri_ids    — parallel to out_transforms; tri_id of the emitting triangle
 
 import terrain_noise_3d;
 
 static const float SCATTER_PI = 3.14159265358979;
+
+// Wang integer hash — used for the variant filter so the same stable tri_id
+// always maps to the same variant bucket, independent of vertex-position
+// float precision.
+uint wang_hash(uint k)
+{
+    k = (k ^ 61u) ^ (k >> 16u);
+    k *= 9u;
+    k ^= k >> 4u;
+    k *= 0x27d4eb2du;
+    k ^= k >> 15u;
+    return k;
+}
 
 // Slang ScatterParams. Layout MUST match `ScatterParams` in
 // `rust/src/layers/scatter.rs` (verified by `scatter_params_pod_size_matches_slang_struct`).
@@ -65,6 +80,8 @@ public struct ScatterParams
 [[vk::binding(7, 0)]] StructuredBuffer<int>         t_deactivated;
 [[vk::binding(8, 0)]] ConstantBuffer<uint>          n_tris;
 [[vk::binding(9, 0)]] StructuredBuffer<uint>        blue_noise;
+[[vk::binding(10, 0)]] StructuredBuffer<uint2>      t_tri_id;
+[[vk::binding(11, 0)]] RWStructuredBuffer<uint2>    out_tri_ids;
 
 // --- Helpers ---
 
@@ -148,17 +165,18 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     float3 center = (pa + pb + pc) * (1.0 / 3.0);
     float3 dir = normalize(center);
 
-    // Variant filter — hash the centroid direction (stable across LOD
-    // compaction) instead of `tri_idx`. The CompactTris pass reshuffles
-    // indices on every divide/merge, so an index-based hash would flip the
-    // variant assignment for the same physical triangle as the camera moves.
-    // Same convention as the yaw seed below; we use `.x` here vs `.z` for
-    // yaw so the two stay statistically independent.
+    // Variant filter — hash the stable per-triangle tri_id. The tri_id is
+    // bit-exact stable across LOD iterations for the same physical triangle,
+    // so the same triangle always lands in the same variant bucket. (The
+    // previous centroid-based hash could flip near bucket boundaries because
+    // vertex positions drift by tiny float-precision amounts between
+    // dispatches.)
     if (scatter_params.variant_count > 1u)
     {
-        float v_hash = hash3(dir * 137.0 + float(scatter_params.seed)).x;
-        uint v = uint(clamp(v_hash * 0.5 + 0.5, 0.0, 0.9999999)
-                      * float(scatter_params.variant_count));
+        uint2 tid = t_tri_id[tri_idx];
+        uint folded = tid.x ^ tid.y;
+        uint v = wang_hash(folded ^ wang_hash(scatter_params.seed))
+                 % scatter_params.variant_count;
         if (v != scatter_params.variant_id) return;
     }
 
@@ -178,6 +196,10 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     // Accepted — claim a slot.
     uint slot;
     InterlockedAdd(out_counter[0], 1u, slot);
+
+    // Mirror the source triangle's stable 64-bit ID into the parallel output
+    // array so the CPU can diff (added/removed) across LOD iterations.
+    out_tri_ids[slot] = t_tri_id[tri_idx];
 
     // Displaced world position (matches TerrainHeight.slang formula).
     float displacement = (height - 0.5) * 2.4 * scatter_params.planet_radius * 0.25;

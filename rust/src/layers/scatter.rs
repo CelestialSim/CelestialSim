@@ -25,6 +25,8 @@
 //!   7: `StructuredBuffer<int>`     t_deactivated  (CesState)
 //!   8: `ConstantBuffer<uint>`      n_tris         (CesState's u_n_tris)
 //!   9: `StructuredBuffer<uint>`    blue_noise     (packed bytes)
+//!  10: `StructuredBuffer<uint2>`   t_tri_id       (CesState — stable per-tri u64)
+//!  11: `RWStructuredBuffer<uint2>` out_tri_ids    (parallel to out_buffer; u64 per slot)
 
 use crate::buffer_info::BufferInfo;
 use crate::compute_utils;
@@ -100,6 +102,11 @@ impl Default for ScatterParams {
 pub struct CesScatterRuntime {
     pub(crate) pipeline: Option<ComputePipeline>,
     out_buffer: Option<BufferInfo>,
+    /// Parallel to `out_buffer`. One `u64` per slot; the shader writes the
+    /// source triangle's stable `tri_id` here so the CPU can diff
+    /// (added/removed) across LOD iterations. Allocated only when
+    /// `uses_incremental` is true.
+    out_tri_ids_buffer: Option<BufferInfo>,
     counter_buffer: Option<BufferInfo>,
     /// Blue-noise R8 volume packed 4 bytes per `uint`. Uploaded once on first
     /// dispatch from the bytes stored in `noise_bytes`.
@@ -114,6 +121,15 @@ pub struct CesScatterRuntime {
     /// CPU-side blue-noise bytes, set via `set_blue_noise` before the first
     /// dispatch. Empty until the texture layer has loaded it.
     noise_bytes: Vec<u8>,
+    /// When true, the runtime allocates `out_tri_ids_buffer`, reads it back
+    /// alongside the transform buffer, and emits per-variant
+    /// (added, removed) diffs against `previous`. When false, it behaves
+    /// exactly like before (flat-buffer output, no diffing) and the main
+    /// thread uses MultiMesh.set_buffer.
+    uses_incremental: bool,
+    /// Sorted-by-tri_id (tri_id, transform) snapshot from the previous
+    /// dispatch, one entry per variant. Used to compute added/removed sets.
+    previous: Vec<Vec<(u64, [f32; 12])>>,
 }
 
 impl CesScatterRuntime {
@@ -121,6 +137,7 @@ impl CesScatterRuntime {
         Self {
             pipeline: None,
             out_buffer: None,
+            out_tri_ids_buffer: None,
             counter_buffer: None,
             noise_buffer: None,
             capacity_instances: 0,
@@ -128,7 +145,25 @@ impl CesScatterRuntime {
             params: ScatterParams::default(),
             shader_path: shader_path.to_string(),
             noise_bytes: Vec::new(),
+            uses_incremental: false,
+            previous: Vec::new(),
         }
+    }
+
+    /// Enables (or disables) the incremental tri_id readback + diff path.
+    /// When called with `true`, `previous` is sized to `variant_count` empty
+    /// snapshots so the first dispatch reports every spawn as "added".
+    pub fn set_incremental(&mut self, enabled: bool, variant_count: usize) {
+        self.uses_incremental = enabled;
+        if enabled {
+            self.previous.resize_with(variant_count, Vec::new);
+        } else {
+            self.previous.clear();
+        }
+    }
+
+    pub fn uses_incremental(&self) -> bool {
+        self.uses_incremental
     }
 
     pub fn with_default_shader() -> Self {
@@ -196,6 +231,17 @@ impl CesScatterRuntime {
         let buf = compute_utils::create_empty_storage_buffer(rd, byte_size);
         self.out_buffer = Some(buf);
         self.capacity_instances = new_capacity;
+
+        // Keep the parallel tri_ids buffer in lockstep with `out_buffer` when
+        // incremental mode is enabled. 8 bytes per instance (u64).
+        if self.uses_incremental {
+            if let Some(old) = self.out_tri_ids_buffer.take() {
+                compute_utils::free_rid_on_render_thread(rd, old.rid);
+            }
+            let tri_ids_bytes = new_capacity.saturating_mul(8);
+            let tri_ids_buf = compute_utils::create_empty_storage_buffer(rd, tri_ids_bytes);
+            self.out_tri_ids_buffer = Some(tri_ids_buf);
+        }
     }
 
     /// Lazily creates the 4-byte atomic counter buffer.
@@ -264,6 +310,20 @@ impl CesScatterRuntime {
             }
         };
 
+        // When incremental mode is off we still must bind something to slots
+        // 10/11 because the shader unconditionally references them. Use the
+        // counter buffer as a harmless 4-byte placeholder for binding 10 (the
+        // shader will read garbage, but the result is discarded — uses_incremental
+        // gates whether tri_ids are read back) and a tiny dummy for slot 11.
+        let dummy_tri_ids: BufferInfo;
+        let out_tri_ids_buf: &BufferInfo = match &self.out_tri_ids_buffer {
+            Some(b) => b,
+            None => {
+                dummy_tri_ids = compute_utils::create_empty_storage_buffer(rd, 16);
+                &dummy_tri_ids
+            }
+        };
+
         let buffers: Vec<&BufferInfo> = vec![
             &scatter_params_buf,  // 0
             &terrain_params_buf,  // 1
@@ -275,6 +335,8 @@ impl CesScatterRuntime {
             &state.t_deactivated, // 7
             &state.u_n_tris,      // 8
             noise_buf,            // 9
+            &state.t_tri_id,      // 10
+            out_tri_ids_buf,      // 11
         ];
 
         let workgroup_count = state.n_tris.div_ceil(64).max(1);
@@ -285,6 +347,9 @@ impl CesScatterRuntime {
         compute_utils::free_rid_on_render_thread(rd, terrain_params_buf.rid);
         if self.noise_buffer.is_none() {
             compute_utils::free_rid_on_render_thread(rd, noise_buf.rid);
+        }
+        if self.out_tri_ids_buffer.is_none() {
+            compute_utils::free_rid_on_render_thread(rd, out_tri_ids_buf.rid);
         }
     }
 
@@ -301,6 +366,13 @@ impl CesScatterRuntime {
     /// Reads back `count * 12` floats from the transform buffer. Caller must
     /// know `count` from a prior `readback_count` call.
     pub fn readback_compact(&self, rd: &mut Gd<RenderingDevice>, count: u32) -> Vec<f32> {
+        // Godot's `buffer_get_data_ex(...).size_bytes(0)` reads the *whole*
+        // buffer (size_bytes=0 is the API default meaning "to end"), not zero
+        // bytes. Guard count=0 explicitly to avoid returning the full buffer
+        // capacity as garbage transforms.
+        if count == 0 {
+            return Vec::new();
+        }
         let out_buf = self.out_buffer.as_ref().expect("out_buffer not allocated");
         let filled_floats = count.saturating_mul(FLOATS_PER_INSTANCE);
         let filled_bytes = filled_floats.saturating_mul(4);
@@ -314,6 +386,59 @@ impl CesScatterRuntime {
         compute_utils::convert_buffer_to_vec::<f32>(rd, &view)
     }
 
+    /// Reads back `count` u64s from the parallel tri_ids buffer. Returns an
+    /// empty Vec when incremental mode is off or no buffer is allocated.
+    pub fn readback_tri_ids(&self, rd: &mut Gd<RenderingDevice>, count: u32) -> Vec<u64> {
+        // See note in `readback_compact`: size_bytes(0) means "to end".
+        if count == 0 {
+            return Vec::new();
+        }
+        let Some(buf) = self.out_tri_ids_buffer.as_ref() else {
+            return Vec::new();
+        };
+        let filled_bytes = (count as u64).saturating_mul(8) as u32;
+        let view = BufferInfo {
+            rid: buf.rid,
+            max_size: buf.max_size,
+            filled_size: filled_bytes.min(buf.max_size),
+            buffer_type: buf.buffer_type,
+        };
+        compute_utils::convert_buffer_to_vec::<u64>(rd, &view)
+    }
+
+    /// Computes the (added, removed) diff for `variant_idx` between the
+    /// previous snapshot and the current dispatch's readbacks, and replaces
+    /// the snapshot. `transforms` is the flat float buffer (`count * 12`
+    /// floats), `tri_ids` has `count` entries. Callers must ensure
+    /// `tri_ids.len() == transforms.len() / 12`.
+    pub fn swap_previous_and_diff(
+        &mut self,
+        variant_idx: usize,
+        tri_ids: Vec<u64>,
+        transforms: &[f32],
+    ) -> (Vec<(u64, [f32; 12])>, Vec<u64>) {
+        debug_assert_eq!(tri_ids.len() * 12, transforms.len());
+        let mut curr: Vec<(u64, [f32; 12])> = tri_ids
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| {
+                let base = i * 12;
+                let mut t = [0.0f32; 12];
+                t.copy_from_slice(&transforms[base..base + 12]);
+                (id, t)
+            })
+            .collect();
+        curr.sort_unstable_by_key(|p| p.0);
+
+        if self.previous.len() <= variant_idx {
+            self.previous.resize_with(variant_idx + 1, Vec::new);
+        }
+        let prev = &self.previous[variant_idx];
+        let diff = two_pointer_diff(prev, &curr);
+        self.previous[variant_idx] = curr;
+        diff
+    }
+
     /// Frees pipeline + all owned buffers. Mirrors the layer-runtime pattern.
     pub fn dispose_direct(&mut self, rd: &mut Gd<RenderingDevice>) {
         if let Some(ref mut pipeline) = self.pipeline {
@@ -322,6 +447,7 @@ impl CesScatterRuntime {
         self.pipeline = None;
         for slot in [
             &mut self.out_buffer,
+            &mut self.out_tri_ids_buffer,
             &mut self.counter_buffer,
             &mut self.noise_buffer,
         ] {
@@ -353,6 +479,43 @@ fn requested_output_capacity(
     } else {
         Some(desired)
     }
+}
+
+/// Two-pointer merge over two **sorted-by-key** slices of (tri_id, transform)
+/// pairs. Classifies every key as added (in `curr`, not in `prev`), removed
+/// (in `prev`, not in `curr`), or stable (drop entirely — same tri_id +
+/// same scatter params → identical transform, deterministic from triangle
+/// geometry; no need to compare transform values).
+pub fn two_pointer_diff(
+    prev: &[(u64, [f32; 12])],
+    curr: &[(u64, [f32; 12])],
+) -> (Vec<(u64, [f32; 12])>, Vec<u64>) {
+    let mut added: Vec<(u64, [f32; 12])> = Vec::new();
+    let mut removed: Vec<u64> = Vec::new();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < prev.len() && j < curr.len() {
+        let a = prev[i].0;
+        let b = curr[j].0;
+        if a == b {
+            i += 1;
+            j += 1;
+        } else if a < b {
+            removed.push(a);
+            i += 1;
+        } else {
+            added.push(curr[j]);
+            j += 1;
+        }
+    }
+    while i < prev.len() {
+        removed.push(prev[i].0);
+        i += 1;
+    }
+    while j < curr.len() {
+        added.push(curr[j]);
+        j += 1;
+    }
+    (added, removed)
 }
 
 /// Capacity round-up to a power of two with a 64 floor.
@@ -459,6 +622,59 @@ mod tests {
         let rt = CesScatterRuntime::with_default_shader();
         assert!(!rt.has_pipeline());
         assert_eq!(rt.capacity_instances(), 0);
+    }
+
+    fn mk(id: u64, marker: f32) -> (u64, [f32; 12]) {
+        let mut t = [0.0; 12];
+        t[3] = marker;
+        (id, t)
+    }
+
+    #[test]
+    fn two_pointer_diff_empty_prev_yields_all_added() {
+        let curr = vec![mk(1, 1.0), mk(2, 2.0)];
+        let (added, removed) = super::two_pointer_diff(&[], &curr);
+        assert_eq!(added.len(), 2);
+        assert_eq!(added[0].0, 1);
+        assert_eq!(added[1].0, 2);
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn two_pointer_diff_empty_curr_yields_all_removed() {
+        let prev = vec![mk(1, 1.0), mk(2, 2.0)];
+        let (added, removed) = super::two_pointer_diff(&prev, &[]);
+        assert!(added.is_empty());
+        assert_eq!(removed, vec![1u64, 2]);
+    }
+
+    #[test]
+    fn two_pointer_diff_identical_yields_no_changes() {
+        let prev = vec![mk(1, 1.0), mk(2, 2.0), mk(7, 9.0)];
+        let curr = prev.clone();
+        let (added, removed) = super::two_pointer_diff(&prev, &curr);
+        assert!(added.is_empty());
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn two_pointer_diff_partial_overlap_classifies_correctly() {
+        let prev = vec![mk(1, 1.0), mk(2, 2.0), mk(3, 3.0)];
+        let curr = vec![mk(2, 2.0), mk(3, 3.0), mk(4, 4.0)];
+        let (added, removed) = super::two_pointer_diff(&prev, &curr);
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].0, 4);
+        assert_eq!(removed, vec![1u64]);
+    }
+
+    #[test]
+    fn two_pointer_diff_handles_interleaved_keys() {
+        let prev = vec![mk(1, 1.0), mk(3, 3.0), mk(5, 5.0), mk(7, 7.0)];
+        let curr = vec![mk(2, 2.0), mk(3, 3.0), mk(6, 6.0), mk(7, 7.0)];
+        let (added, removed) = super::two_pointer_diff(&prev, &curr);
+        let added_ids: Vec<u64> = added.iter().map(|p| p.0).collect();
+        assert_eq!(added_ids, vec![2u64, 6]);
+        assert_eq!(removed, vec![1u64, 5]);
     }
 
     #[test]

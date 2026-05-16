@@ -16,10 +16,20 @@ pub async fn create_compute_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         })
         .await?;
 
+    // Bump the per-stage storage-buffer limit above the default downlevel cap
+    // (8) so shaders binding 9+ storage buffers (e.g. ScatterPlacement) can be
+    // tested. Adapter must report enough; fall back to default if not.
+    let adapter_limits = adapter.limits();
+    let mut limits = wgpu::Limits::downlevel_defaults();
+    limits.max_storage_buffers_per_shader_stage = adapter_limits
+        .max_storage_buffers_per_shader_stage
+        .max(limits.max_storage_buffers_per_shader_stage);
+
     let result = adapter
         .request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("compute-test-device"),
+                required_limits: limits,
                 ..Default::default()
             },
             None,

@@ -196,8 +196,10 @@ fn binding_layout() -> Vec<wgpu::BindGroupLayoutEntry> {
         storage_ro(5), // t_abc
         storage_ro(6), // t_lv
         storage_ro(7), // t_deactivated
-        uniform(8),    // n_tris
-        storage_ro(9), // blue_noise
+        uniform(8),     // n_tris
+        storage_ro(9),  // blue_noise
+        storage_ro(10), // t_tri_id (u64 per tri)
+        storage_rw(11), // out_tri_ids (u64 per slot)
     ]
 }
 
@@ -335,6 +337,22 @@ async fn run_variants(variant_count: u32) -> Option<Vec<u32>> {
         mapped_at_creation: false,
     });
 
+    // Stable per-triangle u64 IDs. The variant-filter tests only care about
+    // counts (not identity), so dummy values are fine.
+    let t_tri_id_data: Vec<u64> = (0..n_tris as u64).collect();
+    let t_tri_id_buf = create_buffer_init(
+        &device,
+        "t_tri_id",
+        bytemuck::cast_slice(&t_tri_id_data),
+        wgpu::BufferUsages::STORAGE,
+    );
+    let out_tri_ids_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("out_tri_ids"),
+        size: (n_tris as u64) * 8,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+
     let mut emitted_counts = Vec::with_capacity(variant_count as usize);
 
     for variant_id in 0..variant_count {
@@ -392,6 +410,14 @@ async fn run_variants(variant_count: u32) -> Option<Vec<u32>> {
             wgpu::BindGroupEntry {
                 binding: 9,
                 resource: noise_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: t_tri_id_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 11,
+                resource: out_tri_ids_buf.as_entire_binding(),
             },
         ];
 

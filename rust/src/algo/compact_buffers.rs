@@ -80,6 +80,10 @@ impl CompactShaders {
         let t_center_t_dst = compute_utils::create_empty_storage_buffer(rd, dst_byte_size);
         let t_parent_dst = compute_utils::create_empty_storage_buffer(rd, dst_byte_size);
         let t_deactivated_dst = compute_utils::create_empty_storage_buffer(rd, dst_byte_size);
+        let t_tri_id_dst = compute_utils::create_empty_storage_buffer(
+            rd,
+            std::mem::size_of::<u64>() as u32 * active_count,
+        );
 
         let active_count_buf = compute_utils::create_uniform_buffer(rd, &active_count);
 
@@ -117,6 +121,8 @@ impl CompactShaders {
             &t_deactivated_dst,      // 30
             &state.u_n_tris,         // 31
             &active_count_buf,       // 32
+            &state.t_tri_id,         // 33 (src)
+            &t_tri_id_dst,           // 34 (dst)
         ];
 
         self.compact_tris
@@ -139,6 +145,7 @@ impl CompactShaders {
             std::mem::replace(&mut state.t_center_t, t_center_t_dst),
             std::mem::replace(&mut state.t_parent, t_parent_dst),
             std::mem::replace(&mut state.t_deactivated, t_deactivated_dst),
+            std::mem::replace(&mut state.t_tri_id, t_tri_id_dst),
         ];
         for buf in &old_bufs {
             compute_utils::free_rid_on_render_thread(rd, buf.rid);

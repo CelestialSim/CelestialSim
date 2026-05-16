@@ -16,7 +16,7 @@ pub struct Triangle {
     pub w: i32,
 }
 
-/// Holds 17 GPU buffers and metadata for the LOD subdivision algorithm.
+/// Holds GPU buffers and metadata for the LOD subdivision algorithm.
 /// Mirrors the C# `CesState` class.
 pub struct CesState {
     pub n_tris: u32,
@@ -25,7 +25,7 @@ pub struct CesState {
     pub n_divided: u32,
     pub start_idx: u32,
 
-    // 17 buffer fields
+    // per-triangle and per-vertex buffer fields
     pub t_abc: BufferInfo,
     pub t_a_t: BufferInfo,
     pub t_b_t: BufferInfo,
@@ -35,6 +35,7 @@ pub struct CesState {
     pub t_divided: BufferInfo,
     pub t_deactivated: BufferInfo,
     pub t_ico_idx: BufferInfo,
+    pub t_tri_id: BufferInfo,
     pub t_lv: BufferInfo,
     pub t_neight_ab: BufferInfo,
     pub t_neight_bc: BufferInfo,
@@ -50,7 +51,7 @@ pub struct CesState {
 }
 
 impl CesState {
-    /// Returns the RIDs of all 17 GPU buffers.
+    /// Returns the RIDs of all GPU buffers.
     pub fn all_buffers(&self) -> Vec<Rid> {
         vec![
             self.t_abc.rid,
@@ -62,6 +63,7 @@ impl CesState {
             self.t_divided.rid,
             self.t_deactivated.rid,
             self.t_ico_idx.rid,
+            self.t_tri_id.rid,
             self.t_lv.rid,
             self.t_neight_ab.rid,
             self.t_neight_bc.rid,
@@ -75,7 +77,7 @@ impl CesState {
         ]
     }
 
-    /// Frees all 17 GPU buffers. Must be called on the rendering thread
+    /// Frees all GPU buffers. Must be called on the rendering thread
     /// (or wrapped with CallOnRenderThread in Phase 7/8).
     pub fn dispose(&self, rd: &mut Gd<RenderingDevice>) {
         for rid in self.all_buffers() {

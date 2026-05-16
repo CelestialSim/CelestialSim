@@ -107,7 +107,6 @@ fn transform3d_iter_from_floats12(buf: &[f32]) -> impl Iterator<Item = Transform
 
 // Order matches `apply_baked_transform_in_place`: per_instance * baked is the
 // existing convention; planet wraps it as the outermost transform.
-#[allow(dead_code)]
 fn compose_scatter_transform(
     planet: Transform3D,
     baked: Transform3D,
@@ -157,6 +156,36 @@ fn rid_pool_sync_size(
         if let Some(rid) = pool.pop() {
             free(rid);
         }
+    }
+}
+
+/// Incremental scatter applier (pure helper). For each `(tri_id, transform)`
+/// in `added`, allocates a new RID via `alloc`, sets its transform, and
+/// inserts into `map`. For each tri_id in `removed`, frees the matching RID
+/// via `free` and removes it from `map`. Mirror of `rid_pool_sync_size` but
+/// keyed by stable tri_id so re-pushes are unnecessary when the camera
+/// hasn't moved enough to change the LOD shape.
+pub fn apply_scatter_diff_with(
+    map: &mut std::collections::HashMap<u64, Rid>,
+    added: &[(u64, [f32; 12])],
+    removed: &[u64],
+    planet: Transform3D,
+    baked: Transform3D,
+    mut create_rid: impl FnMut() -> Rid,
+    mut set_transform: impl FnMut(Rid, Transform3D),
+    mut free: impl FnMut(Rid),
+) {
+    for tri_id in removed.iter().copied() {
+        if let Some(rid) = map.remove(&tri_id) {
+            free(rid);
+        }
+    }
+    for (tri_id, per_inst_floats) in added.iter() {
+        let rid = create_rid();
+        let per_inst = transform3d_from_floats12(per_inst_floats);
+        let composed = compose_scatter_transform(planet, baked, per_inst);
+        set_transform(rid, composed);
+        map.insert(*tri_id, rid);
     }
 }
 
@@ -664,13 +693,14 @@ pub(crate) struct ScatterVariant {
 }
 
 /// RenderingServer-path variant: each instance is its own `RID` (no
-/// `MultiMeshInstance3D`). Used for slots routed through the RS path in
-/// Phase 2. `instance_rids` is grown/shrunk by `rid_pool_sync_size` each
-/// apply. `material_rid` is `None` when the layer's `material` is unset
-/// (skip `instance_geometry_set_material_override` in that case).
+/// `MultiMeshInstance3D`). Used for slots routed through the RS path.
+/// `instance_map` is a `tri_id → Rid` table maintained by the incremental
+/// diff applier on the main thread. `material_rid` is `None` when the
+/// layer's `material` is unset (skip `instance_geometry_set_material_override`
+/// in that case).
 pub(crate) struct ScatterRsVariant {
     pub mesh_rid: Rid,
-    pub instance_rids: Vec<Rid>,
+    pub instance_map: std::collections::HashMap<u64, Rid>,
     pub baked_transform: Transform3D,
     pub material_rid: Option<Rid>,
 }
@@ -735,6 +765,13 @@ struct MeshResult {
     /// Number of transforms written per (slot, variant). Outer/middle index
     /// alignment matches `scatter_buffers`.
     scatter_instance_counts: Vec<Vec<u32>>,
+    /// Per-slot, per-variant **added** instances since the previous worker
+    /// iteration. Only populated for RS-routed slots (where the worker runs
+    /// the tri_id diffing path); empty for MMI-routed slots.
+    scatter_added: Vec<Vec<Vec<(u64, [f32; 12])>>>,
+    /// Per-slot, per-variant **removed** tri_ids since the previous worker
+    /// iteration. Same outer/middle alignment as `scatter_added`.
+    scatter_removed: Vec<Vec<Vec<u64>>>,
     /// Worker-side timing snapshot for this frame. None when timing disabled.
     timing: Option<crate::perf::TimingTree>,
     /// Experimental shared position texture written on the worker/local RD and
@@ -784,6 +821,11 @@ struct WorkerConfig {
     /// legacy single-mesh). Parallel to `scatter_params`. Drives the
     /// N-dispatch loop in the worker thread.
     scatter_variant_counts: Vec<u32>,
+    /// Per-slot routing flag. When `true`, the worker emits per-variant
+    /// (added, removed) diffs against the previous iteration; when `false`,
+    /// the legacy flat-buffer output is used (consumed by MultiMesh).
+    /// Parallel to `scatter_params`.
+    scatter_slot_uses_rs: Vec<bool>,
 }
 
 struct WorkerState {
@@ -2152,6 +2194,7 @@ impl CesCelestialRust {
             debug_return_early_from_process: self.debug_return_early_from_process,
             scatter_params: read_enabled_scatter_layer_params(&self.scatter_layers),
             scatter_variant_counts: self.scatter_variant_counts(),
+            scatter_slot_uses_rs: self.scatter_slot_uses_rs.clone(),
         };
 
         if let Some(ref work_tx) = self.work_tx {
@@ -2229,48 +2272,39 @@ impl CesCelestialRust {
                 if rs_variants.is_empty() {
                     continue;
                 }
-                let slot_buffers = result.scatter_buffers.get(slot_idx);
-                let slot_counts = result.scatter_instance_counts.get(slot_idx);
+                let added_slot = result.scatter_added.get(slot_idx);
+                let removed_slot = result.scatter_removed.get(slot_idx);
                 for (v_idx, variant) in rs_variants.iter_mut().enumerate() {
-                    let target_count = slot_counts
-                        .and_then(|c| c.get(v_idx))
-                        .copied()
-                        .unwrap_or(0) as usize;
+                    let added: &[(u64, [f32; 12])] = added_slot
+                        .and_then(|s| s.get(v_idx))
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    let removed: &[u64] = removed_slot
+                        .and_then(|s| s.get(v_idx))
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    if added.is_empty() && removed.is_empty() {
+                        continue;
+                    }
                     let mesh_rid = variant.mesh_rid;
                     let material_rid = variant.material_rid;
-                    rid_pool_sync_size(
-                        &mut variant.instance_rids,
-                        target_count,
+                    let baked = variant.baked_transform;
+                    apply_scatter_diff_with(
+                        &mut variant.instance_map,
+                        added,
+                        removed,
+                        planet_xform,
+                        baked,
                         || {
                             let mut rs = RenderingServer::singleton();
                             let rid = rs.instance_create2(mesh_rid, scenario);
-                            rs.instance_geometry_set_cast_shadows_setting(
-                                rid,
-                                godot::classes::rendering_server::ShadowCastingSetting::OFF,
-                            );
                             if let Some(mat) = material_rid {
                                 rs.instance_geometry_set_material_override(rid, mat);
                             }
                             rid
                         },
+                        |rid, t| RenderingServer::singleton().instance_set_transform(rid, t),
                         |rid| RenderingServer::singleton().free_rid(rid),
-                    );
-                    if target_count == 0 {
-                        continue;
-                    }
-                    let Some(buf) = slot_buffers.and_then(|s| s.get(v_idx)) else {
-                        continue;
-                    };
-                    if buf.is_empty() {
-                        continue;
-                    }
-                    let mut rs = RenderingServer::singleton();
-                    apply_rs_transforms(
-                        &variant.instance_rids,
-                        buf,
-                        planet_xform,
-                        variant.baked_transform,
-                        |rid, t| rs.instance_set_transform(rid, t),
                     );
                 }
             }
@@ -2939,6 +2973,8 @@ impl CesCelestialRust {
                         snapshot_updated: false,
                         scatter_buffers: vec![],
                         scatter_instance_counts: vec![],
+                        scatter_added: vec![],
+                        scatter_removed: vec![],
                         timing: if config.show_debug_messages {
                             Some(worker_tree)
                         } else {
@@ -3032,6 +3068,15 @@ impl CesCelestialRust {
                     .collect();
                 let (mut scatter_buffers, mut scatter_instance_counts) =
                     zeroed_scatter_results(&scatter_variant_counts);
+                // Parallel structures for the incremental (RS-routed) path.
+                let mut scatter_added: Vec<Vec<Vec<(u64, [f32; 12])>>> = scatter_variant_counts
+                    .iter()
+                    .map(|&n| vec![Vec::new(); n as usize])
+                    .collect();
+                let mut scatter_removed: Vec<Vec<Vec<u64>>> = scatter_variant_counts
+                    .iter()
+                    .map(|&n| vec![Vec::new(); n as usize])
+                    .collect();
                 if scatter_slot_count > 0 {
                     let WorkerState {
                         ref mut rd,
@@ -3073,6 +3118,17 @@ impl CesCelestialRust {
                                 runtime.set_force_shrink_each_dispatch(
                                     config.scatter_force_shrink_each_dispatch,
                                 );
+                                let uses_incremental = config
+                                    .scatter_slot_uses_rs
+                                    .get(slot)
+                                    .copied()
+                                    .unwrap_or(false);
+                                if runtime.uses_incremental() != uses_incremental {
+                                    runtime.set_incremental(
+                                        uses_incremental,
+                                        variant_count as usize,
+                                    );
+                                }
                                 runtime.init_pipeline(rd);
                                 let layer_label = format!("layer_{slot}");
                                 let _layer_scope = crate::perf::ThreadScope::enter(&layer_label);
@@ -3097,7 +3153,28 @@ impl CesCelestialRust {
                                         let _g = crate::perf::ThreadScope::enter("readback_count");
                                         runtime.readback_count(rd)
                                     };
-                                    {
+                                    if uses_incremental {
+                                        let transforms = {
+                                            let _g = crate::perf::ThreadScope::enter(
+                                                "readback_compact",
+                                            );
+                                            runtime.readback_compact(rd, count)
+                                        };
+                                        let tri_ids = {
+                                            let _g = crate::perf::ThreadScope::enter(
+                                                "readback_tri_ids",
+                                            );
+                                            runtime.readback_tri_ids(rd, count)
+                                        };
+                                        let _g = crate::perf::ThreadScope::enter("diff");
+                                        let (added, removed) = runtime.swap_previous_and_diff(
+                                            variant_id as usize,
+                                            tri_ids,
+                                            &transforms,
+                                        );
+                                        scatter_added[slot][variant_id as usize] = added;
+                                        scatter_removed[slot][variant_id as usize] = removed;
+                                    } else {
                                         let _g =
                                             crate::perf::ThreadScope::enter("readback_compact");
                                         scatter_buffers[slot][variant_id as usize] =
@@ -3197,6 +3274,8 @@ impl CesCelestialRust {
                     snapshot_updated,
                     scatter_buffers,
                     scatter_instance_counts,
+                    scatter_added,
+                    scatter_removed,
                     timing: if config.show_debug_messages {
                         Some(worker_tree)
                     } else {
@@ -3381,7 +3460,7 @@ impl CesCelestialRust {
                     let material_rid = material_opt.as_ref().map(|m| m.get_rid());
                     rs_variants.push(ScatterRsVariant {
                         mesh_rid: mesh.get_rid(),
-                        instance_rids: Vec::new(),
+                        instance_map: std::collections::HashMap::new(),
                         baked_transform: baked,
                         material_rid,
                     });
@@ -3406,22 +3485,6 @@ impl CesCelestialRust {
                 mm.set_mesh(&mesh);
                 mm.set_instance_count(0);
                 mmi.set_multimesh(&mm);
-
-                // Note: `set_lod_bias` is a no-op on `MultiMeshInstance3D`
-                // in Godot 4 — the renderer picks a single LOD for the MMI
-                // from its AABB, not per-instance, and at scatter scale the
-                // AABB always picks LOD0. Empirical test on this codebase
-                // (bias=0.01 vs 1.0) showed no FPS or visual delta. Real
-                // wins for dense scatter come from baking decimation into
-                // the source mesh (see rust/src/bin/decimate_gltf.rs) and
-                // disabling shadow casting below.
-
-                // Disable shadow casting: each rock instance otherwise
-                // renders twice (shadow pass + main pass), and shadows from
-                // tiny scattered props rarely contribute visually at this
-                // density. Tunable per scatter layer is a follow-up.
-                use godot::classes::geometry_instance_3d::ShadowCastingSetting;
-                mmi.set_cast_shadows_setting(ShadowCastingSetting::OFF);
 
                 if let Some(ref material) = material_opt {
                     mmi.set_material_override(material);
@@ -3463,7 +3526,7 @@ impl CesCelestialRust {
             let mut rs = RenderingServer::singleton();
             for variants in rs_slots.into_iter() {
                 for variant in variants.into_iter() {
-                    for rid in variant.instance_rids.into_iter() {
+                    for rid in variant.instance_map.into_values() {
                         rs.free_rid(rid);
                     }
                 }
@@ -3471,11 +3534,16 @@ impl CesCelestialRust {
         }));
     }
 
-    /// Returns the per-slot variant count parallel to `scatter_slots`.
-    /// Used to drive the N-dispatch loop on the worker thread and the
-    /// per-variant readback. A slot with zero variants reports `0`.
+    /// Returns the per-slot variant count parallel to `scatter_slots` /
+    /// `scatter_slots_rs`. Used to drive the N-dispatch loop on the worker
+    /// thread and the per-variant readback. A slot with zero variants
+    /// reports `0`. Each slot lives in exactly one of the two collections.
     fn scatter_variant_counts(&self) -> Vec<u32> {
-        self.scatter_slots.iter().map(|v| v.len() as u32).collect()
+        self.scatter_slots
+            .iter()
+            .zip(self.scatter_slots_rs.iter())
+            .map(|(mm, rs)| (mm.len() + rs.len()) as u32)
+            .collect()
     }
 
     /// Connect the `Resource.changed` signal on all active layers so that
@@ -3969,6 +4037,141 @@ mod tests {
     // exercise the pure core (`read_use_rs_from_opt`) which receives the
     // `try_to::<bool>().ok()` result instead of the Variant itself. The
     // mapping is: bool→Some(bool), nil/wrong-type→None.
+
+    fn id_floats(marker: f32) -> [f32; 12] {
+        let mut t = [0.0f32; 12];
+        // identity basis (X=col0, Y=col1, Z=col2 in row-major mat3x4)
+        t[0] = 1.0;
+        t[5] = 1.0;
+        t[10] = 1.0;
+        // origin x = marker so we can recognise which add went where.
+        t[3] = marker;
+        t
+    }
+
+    fn alloc_counter() -> impl FnMut() -> Rid {
+        let mut next = 1u64;
+        move || {
+            let r = Rid::new(next);
+            next += 1;
+            r
+        }
+    }
+
+    #[test]
+    fn apply_diff_adds_inserts_into_map_and_calls_create_set() {
+        use godot::prelude::Transform3D;
+        let mut map: std::collections::HashMap<u64, Rid> = std::collections::HashMap::new();
+        let added = vec![(10u64, id_floats(1.0)), (20u64, id_floats(2.0))];
+        let mut sets: Vec<(Rid, Transform3D)> = Vec::new();
+        super::apply_scatter_diff_with(
+            &mut map,
+            &added,
+            &[],
+            Transform3D::IDENTITY,
+            Transform3D::IDENTITY,
+            alloc_counter(),
+            |rid, t| sets.push((rid, t)),
+            |_| panic!("should not free"),
+        );
+        assert_eq!(map.len(), 2);
+        assert_eq!(sets.len(), 2);
+        assert!(map.contains_key(&10));
+        assert!(map.contains_key(&20));
+    }
+
+    #[test]
+    fn apply_diff_removes_drop_from_map_and_calls_free() {
+        use godot::prelude::Transform3D;
+        let mut map: std::collections::HashMap<u64, Rid> = std::collections::HashMap::new();
+        map.insert(5, Rid::new(100));
+        map.insert(6, Rid::new(101));
+        let mut frees: Vec<Rid> = Vec::new();
+        super::apply_scatter_diff_with(
+            &mut map,
+            &[],
+            &[5u64, 6],
+            Transform3D::IDENTITY,
+            Transform3D::IDENTITY,
+            || panic!("should not create"),
+            |_, _| panic!("should not set"),
+            |rid| frees.push(rid),
+        );
+        assert!(map.is_empty());
+        assert_eq!(frees.len(), 2);
+    }
+
+    #[test]
+    fn apply_diff_mixed_add_remove_consistent_map_state() {
+        use godot::prelude::Transform3D;
+        let mut map: std::collections::HashMap<u64, Rid> = std::collections::HashMap::new();
+        map.insert(1, Rid::new(100));
+        map.insert(2, Rid::new(101));
+        let added = vec![(3u64, id_floats(3.0))];
+        let removed = vec![1u64];
+        let mut sets: Vec<Rid> = Vec::new();
+        let mut frees: Vec<Rid> = Vec::new();
+        super::apply_scatter_diff_with(
+            &mut map,
+            &added,
+            &removed,
+            Transform3D::IDENTITY,
+            Transform3D::IDENTITY,
+            alloc_counter(),
+            |rid, _| sets.push(rid),
+            |rid| frees.push(rid),
+        );
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&2));
+        assert!(map.contains_key(&3));
+        assert!(!map.contains_key(&1));
+        assert_eq!(frees, vec![Rid::new(100)]);
+        assert_eq!(sets.len(), 1);
+    }
+
+    #[test]
+    fn apply_diff_uses_correct_composed_transform() {
+        use godot::prelude::{Basis, Transform3D, Vector3};
+        let mut map: std::collections::HashMap<u64, Rid> = std::collections::HashMap::new();
+        let per_inst_floats = id_floats(7.0);
+        let added = vec![(42u64, per_inst_floats)];
+        let planet = Transform3D::new(Basis::IDENTITY, Vector3::new(100.0, 0.0, 0.0));
+        let baked = Transform3D::new(Basis::IDENTITY, Vector3::new(0.0, 0.0, 1.0));
+        let mut captured: Vec<(Rid, Transform3D)> = Vec::new();
+        super::apply_scatter_diff_with(
+            &mut map,
+            &added,
+            &[],
+            planet,
+            baked,
+            alloc_counter(),
+            |rid, t| captured.push((rid, t)),
+            |_| {},
+        );
+        let per_inst = super::transform3d_from_floats12(&per_inst_floats);
+        let expected = super::compose_scatter_transform(planet, baked, per_inst);
+        assert_eq!(captured.len(), 1);
+        assert!((captured[0].1.origin - expected.origin).length() < 1e-5);
+    }
+
+    #[test]
+    fn apply_diff_empty_diff_is_noop() {
+        use godot::prelude::Transform3D;
+        let mut map: std::collections::HashMap<u64, Rid> = std::collections::HashMap::new();
+        map.insert(7, Rid::new(70));
+        super::apply_scatter_diff_with(
+            &mut map,
+            &[],
+            &[],
+            Transform3D::IDENTITY,
+            Transform3D::IDENTITY,
+            || panic!("no create"),
+            |_, _| panic!("no set"),
+            |_| panic!("no free"),
+        );
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&7), Some(&Rid::new(70)));
+    }
 
     #[test]
     fn read_use_rs_returns_true_for_bool_true_variant() {

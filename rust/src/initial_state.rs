@@ -85,6 +85,10 @@ pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
     // Identity mapping for icosphere index
     let t_ico_idx: Vec<i32> = (0..n_tris as i32).collect();
 
+    // Stable per-triangle ID for the 20 root triangles at depth 0:
+    //   bits 0..4 = ico_idx, bit 5 = sentinel.
+    let t_tri_id: Vec<u64> = (0..n_tris).map(|i| (1u64 << 5) | (i as u64)).collect();
+
     // Masks: all zero
     let t_divided = vec![0i32; n_tris as usize];
     let t_deactivated = vec![0i32; n_tris as usize];
@@ -109,6 +113,7 @@ pub fn create_core_state(rd: &mut Gd<RenderingDevice>) -> CesState {
         t_neight_bc: compute_utils::create_storage_buffer(rd, &NEIGHT_BC),
         t_neight_ca: compute_utils::create_storage_buffer(rd, &NEIGHT_CA),
         t_ico_idx: compute_utils::create_storage_buffer(rd, &t_ico_idx),
+        t_tri_id: compute_utils::create_storage_buffer(rd, &t_tri_id),
         t_a_t: compute_utils::create_storage_buffer(rd, &t_a_t),
         t_b_t: compute_utils::create_storage_buffer(rd, &t_b_t),
         t_c_t: compute_utils::create_storage_buffer(rd, &t_c_t),

@@ -99,7 +99,6 @@ node_name = &"rock_moss_set_02_rock12"
 [sub_resource type="Resource" id="pick_rock13"]
 script = ExtResource("ces_gltf_child_pick")
 node_name = &"rock_moss_set_02_rock13"
-enabled = false
 
 [sub_resource type="CesMeshSourceResource" id="rocks_mesh_source"]
 script = ExtResource("ces_mesh_source_gltf")

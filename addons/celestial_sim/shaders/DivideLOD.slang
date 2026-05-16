@@ -65,6 +65,11 @@ RWStructuredBuffer<int> t_lv;
 [[vk::binding(20, 0)]]
 StructuredBuffer<int> div_prefix;
 
+// Stable per-triangle ID (path encoding); parent slot read, child slots written
+// in this same dispatch (parent_idx < nTris, child indices >= nTris).
+[[vk::binding(21, 0)]]
+RWStructuredBuffer<uint64_t> t_tri_id;
+
 
 enum Edge
 {
@@ -368,6 +373,22 @@ uint4 add_triangles(uint parent_idx, int3 abc, int3 v_idx, uint divTrisIndex)
     t_parent[t_idx.y] = parent_idx;
     t_parent[t_idx.z] = parent_idx;
     t_parent[t_idx.w] = parent_idx;
+
+    // Propagate the stable per-triangle ID.
+    // Child c (0..3) at parent depth D:
+    //   - clear old sentinel at bit (5 + 2D)
+    //   - set child path bits (c) at bit (5 + 2D)
+    //   - set new sentinel at bit (5 + 2D + 2)
+    uint64_t parent_id = t_tri_id[parent_idx];
+    uint parent_lv = uint(t_lv[parent_idx]);
+    uint sentinel_shift = 5u + 2u * parent_lv;
+    uint64_t old_sentinel = uint64_t(1) << sentinel_shift;
+    uint64_t new_sentinel = old_sentinel << 2;
+    uint64_t cleared = parent_id ^ old_sentinel;
+    t_tri_id[t_idx.x] = cleared | (uint64_t(0) << sentinel_shift) | new_sentinel;
+    t_tri_id[t_idx.y] = cleared | (uint64_t(1) << sentinel_shift) | new_sentinel;
+    t_tri_id[t_idx.z] = cleared | (uint64_t(2) << sentinel_shift) | new_sentinel;
+    t_tri_id[t_idx.w] = cleared | (uint64_t(3) << sentinel_shift) | new_sentinel;
     
     // --- Update neighbours ---
     // TODO: re-enable this

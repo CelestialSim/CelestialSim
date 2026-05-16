@@ -268,6 +268,9 @@ impl DivShader {
         state.t_to_divide_mask.extend_buffer(rd, tri_extend);
         state.t_to_merge_mask.extend_buffer(rd, tri_extend);
         state.t_ico_idx.extend_buffer(rd, tri_extend);
+        state
+            .t_tri_id
+            .extend_buffer(rd, std::mem::size_of::<u64>() as u32 * n_tris_added);
         state.t_neight_ab.extend_buffer(rd, tri_extend);
         state.t_neight_bc.extend_buffer(rd, tri_extend);
         state.t_neight_ca.extend_buffer(rd, tri_extend);
@@ -306,6 +309,7 @@ impl DivShader {
             &remove_repeated_buf,    // 18
             &state.t_lv,             // 19
             &div_prefix_buf,         // 20
+            &state.t_tri_id,         // 21
         ];
 
         let workgroups = (old_n_tris + 255) / 256;

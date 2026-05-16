@@ -100,6 +100,12 @@ ConstantBuffer<uint> n_tris_total;
 [[vk::binding(32, 0)]]
 ConstantBuffer<uint> n_tris_active;
 
+[[vk::binding(33, 0)]]
+StructuredBuffer<uint64_t> t_tri_id_src;
+
+[[vk::binding(34, 0)]]
+RWStructuredBuffer<uint64_t> t_tri_id_dst;
+
 // Returns -1 for inactive or out-of-range references; otherwise returns the compacted index.
 int remap_if_active(int idx)
 {
@@ -151,6 +157,7 @@ void computeMain(uint3 DTid: SV_DispatchThreadID)
     t_to_div_dst[dst_idx] = t_to_div_src[src_idx];
     t_to_merge_dst[dst_idx] = t_to_merge_src[src_idx];
     t_ico_idx_dst[dst_idx] = t_ico_idx_src[src_idx];
+    t_tri_id_dst[dst_idx] = t_tri_id_src[src_idx];
     t_deactivated_dst[dst_idx] = 0;
 
     // Remap hierarchy pointers
