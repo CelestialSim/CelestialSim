@@ -7,7 +7,7 @@ chunked-quadtree LOD: the CPU picks a screen-space-error cut, the GPU realizes t
 geometry and bakes the surface detail. Nothing in the terrain path reads back from the
 GPU, so flying toward the surface doesn't cause lag spikes.
 
-### 📖 Everything — install, tutorials, API — is at **<https://celestialsim.github.io/CelestialSim/>**
+### Everything — install, tutorials, API — is at **<https://celestialsim.github.io/CelestialSim/>**
 
 > **Beta.** Usable today, but pre-1.0: APIs can change between releases. Bug reports and
 > feedback are welcome on
