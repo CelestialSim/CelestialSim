@@ -22,8 +22,14 @@ The two **noise** builders are their own resource types (`CesGPUNoiseExample` /
 *custom* terrain. Its `device` is set in code, **not** the inspector: a bare
 `CesBuilder` you create with **New** is always **GPU** (it shows only
 `shader_file`), and a **CPU** builder is always a subclass that sets
-`device = CPU` in `_init` (see below) — so you can't pick a broken
-CPU-on-a-bare-builder combo.
+`device = 1` (`BuilderDevice.CPU`) in `_init` (see below) — so you can't pick a
+broken CPU-on-a-bare-builder combo.
+
+!!! note
+    `device` is an integer in GDScript — **`0` = GPU, `1` = CPU**. The
+    `BuilderDevice` enum is defined in Rust and shows as a dropdown in the
+    inspector, but its names are not exposed to GDScript, so write the number and
+    keep the comment: `device = 1  # BuilderDevice.CPU`.
 
 ## Assigning a builder
 
@@ -31,18 +37,39 @@ In the inspector, click the **Builder** property → **New**, then pick
 `CesGPUNoiseExample`, `CesCPUNoiseExample`, or `CesBuilder` (for custom terrain). The knobs a
 type doesn't use aren't shown.
 
+## What every builder has
+
+`CesBuilder` owns the **[water settings](water.md)** — `water_enabled`,
+`water_height` (sea level, default `0.549`) and the wave/colour knobs. They are
+native to the base class, so *every* builder carries them: the noise examples and
+your own custom one alike. Water is a terrain parameter, not a separate feature.
+
+The two noise builders add their own tuning knobs on top (continent frequency,
+octaves, ridge strength, relief…). Those belong to the examples, not to
+`CesBuilder` — a custom builder has none of them and ignores them, because your
+own `terrain_height` decides everything. Just drag them in the inspector; each one
+reshades the planet live.
+
 ## Making your own
 
-- **GPU custom:** create a `CesBuilder` (it's GPU by default) and point
-  `shader_file` at your `.glsl` (defines `terrain_height` / `terrain_color`,
-  optional `terrain_normal`) — or subclass it to add `@export` params.
-- **CPU custom:** write a GDScript that `extends CesBuilder`, sets `device = CPU`
-  in `_init`, and defines batched `height` / `color` / `normal`, then assign it.
-  You can add your own `@export` parameters on that subclass.
-- **CPU custom, async:** the same, but define `_bake_requested` instead of
-  `height`/`color`. The planet hands you chunks and never waits; you call
-  `submit_chunk` when each is ready. Use this whenever the bake is slow or has to
-  wait on a file or the network.
+Three routes, each with a step-by-step tutorial. Pick one and follow it:
+
+- **[Custom GPU terrain — write a `.glsl`](custom_terrain_gpu.md)** — the fast
+  path, and the one to reach for by default. Two small functions
+  (`terrain_height` / `terrain_color`) on a `CesBuilder`, which is GPU already.
+  The tutorial also covers
+  [exposing your own inspector sliders](custom_terrain_gpu.md#advanced-custom-parameters-expose-sliders-in-the-inspector).
+- **[Custom CPU terrain — write GDScript](custom_terrain_cpu_gdscript.md)** — for
+  terrain that needs CPU-side data or logic a shader can't reach (a heightmap
+  `Image`, world state). Batched `height` / `color` / `normal` on a `CesBuilder`
+  subclass with `device = 1`. It bakes on the main thread, so keep `tile_res`
+  moderate.
+- **[Custom CPU terrain, async](custom_terrain_cpu_gdscript.md#advanced-async-bake-threads-files-network)** —
+  the same, but the planet hands you chunks and never waits, and you call
+  `submit_chunk` when each is ready. Use it whenever the bake is slow or has to
+  wait on a file or the network. It keeps the bake off the frame — though a burst
+  of new chunks can still cost you a frame or two, and a Rust builder is faster
+  still than either GDScript route.
 
 ## The custom surface functions (same shape, both paths)
 

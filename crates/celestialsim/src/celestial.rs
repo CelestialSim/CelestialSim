@@ -43,23 +43,43 @@ use crate::surface::{ChunkSurface, CpuSurfaceProvider};
 
 const CHUNK_SHADER: &str = "res://addons/celestialsim/terrain_chunk.gdshader";
 
+/// A procedural planet: the `Node3D` you add to a Godot scene.
+///
+/// It owns the whole terrain pipeline — every frame it selects a screen-space-error
+/// cut of the quadtree around the active camera, realizes the newly-visible chunks
+/// on the GPU, and draws them from an indirect `MultiMesh` child. What the surface
+/// *looks* like comes from the [`CesBuilder`] resource in `builder` (terrain +
+/// ocean); vegetation and props come from the [`CesScatterLayer`] resources in
+/// `scatter_layers`.
+///
+/// The exported properties below are all live: editing one in the inspector (or
+/// from GDScript) reshades or rebuilds as needed, with no scene reload.
 #[derive(GodotClass)]
 #[class(base = Node3D, tool, init)]
 pub struct Celestial {
     base: Base<Node3D>,
 
-    /// Sphere radius.
+    /// Radius of the undisplaced sphere, in world units — the scale of the whole
+    /// planet. Terrain displaces around it, so the rendered ground can sit above or
+    /// below this radius (see `ground_radius_at`). Changing it re-realizes every
+    /// resident chunk. Default 1000.
     #[export]
     #[init(val = 1000.0)]
-    radius: f32,
-    /// Screen-error LOD threshold (chunk edge / distance).
+    pub radius: f32,
+    /// Target screen-space error, in normalized screen units (chunk edge over
+    /// distance): the LOD cut is chosen so no chunk exceeds it. Lower = sharper
+    /// terrain, but more resident chunks, more bakes and more VRAM pressure; higher
+    /// = coarser and cheaper. Default 0.02 (range 0.005–0.5).
     #[export(range = (0.005, 0.5, 0.005))]
     #[init(val = 0.02)]
-    screen_error: f32,
-    /// Chunk edge resolution (segments per chunk edge).
+    pub screen_error: f32,
+    /// Geometry grid of one chunk: `chunk_res` segments per chunk edge, so each
+    /// chunk carries `chunk_res²` triangles. Raising it makes each chunk denser
+    /// (fewer, larger chunks reach the same `screen_error`) at a higher per-slot
+    /// vertex-pool cost. Default 16 (range 2–32).
     #[export(range = (2.0, 32.0, 1.0))]
     #[init(val = 16)]
-    chunk_res: i64,
+    pub chunk_res: i64,
     /// Phase 4: per-chunk detail-tile resolution. Colour + normal detail is baked
     /// at `tile_res × tile_res` per chunk (independent of `chunk_res`) and sampled
     /// per-pixel, so surface shading is crisper than the geometry grid. NOTE: the
@@ -67,11 +87,14 @@ pub struct Celestial {
     /// `tile_res` means fewer chunks fit in `vram_budget_gib` (see `effective_budget`).
     #[export(range = (8.0, 1024.0, 1.0))]
     #[init(val = 32)]
-    tile_res: i64,
-    /// Maximum quadtree depth. 0 = no subdivision (the 20 base faces only — "LOD 0").
+    pub tile_res: i64,
+    /// Hard cap on quadtree subdivision, i.e. the finest terrain the camera can ever
+    /// reach: below this depth the cut stops refining even if `screen_error` is not
+    /// met, so the ground goes blocky as you get close. 0 = no subdivision (the 20
+    /// base icosphere faces only — "LOD 0"). Default 16 (range 0–20).
     #[export(range = (0.0, 20.0, 1.0))]
     #[init(val = 16)]
-    max_depth: i64,
+    pub max_depth: i64,
     /// GPU VRAM budget for the resident chunk pools, in **GiB**. You set the
     /// gigabytes, not a slot count: the number of resident chunk slots is derived
     /// as `vram / per-chunk bytes`, where per-chunk = `verts_per_chunk×48 B`
@@ -80,7 +103,7 @@ pub struct Celestial {
     /// (Also clamped so the atlas texture height stays within the GPU's limit.)
     #[export(range = (0.05, 8.0, 0.05))]
     #[init(val = 1.0)]
-    vram_budget_gib: f32,
+    pub vram_budget_gib: f32,
     /// Geomorphing (Phase 5): smoothly blend each chunk between its full-detail
     /// grid and its coarser (parent-resolution) sublattice as the camera distance
     /// crosses the LOD band, so detail fades in/out instead of popping when the
@@ -91,14 +114,17 @@ pub struct Celestial {
     /// buffer is NOT re-uploaded on camera movement.
     #[export]
     #[init(val = true)]
-    geomorph: bool,
-    /// Tint chunks by slot so the chunk tiling is visible.
+    pub geomorph: bool,
+    /// Debug view: tint each chunk by its pool slot so the chunk tiling (and the LOD
+    /// cut) is visible on the surface. Off by default; purely visual.
     #[export]
     #[init(val = false)]
-    lod_colors: bool,
+    pub lod_colors: bool,
+    /// Print a one-line status (chunks in the cut, resident, realized, graph
+    /// executes, selection time) to the Godot output every ~5 seconds. Default on.
     #[export]
     #[init(val = true)]
-    debug_log: bool,
+    pub debug_log: bool,
     /// Horizon (back-of-planet) culling: skip selecting/realizing/baking/drawing
     /// chunks that are fully beyond the planet's horizon. Removes the entire far
     /// hemisphere; and because the horizon is close when the camera is near the
@@ -106,30 +132,30 @@ pub struct Celestial {
     /// set (and the VRAM/`tile_res` it can afford).
     #[export]
     #[init(val = true)]
-    horizon_cull: bool,
+    pub horizon_cull: bool,
     /// Terrain-height slack for horizon culling, as a fraction of `radius`: a
     /// patch is kept if terrain up to `radius × cull_height_margin` above the
     /// surface could peek over the horizon. Raise if tall terrain pops in at the
     /// horizon; lower to cull more aggressively. (HQ max displacement ≈ 0.3·r.)
     #[export(range = (0.0, 1.0, 0.01))]
     #[init(val = 0.3)]
-    cull_height_margin: f32,
+    pub cull_height_margin: f32,
     /// Max NEW chunks to realize+bake per frame. A large influx (teleport, fast
     /// turn, first fill) otherwise bakes every newly-visible chunk in one frame and
     /// spikes frame time; capping it spreads the work over frames (the rest pop in
     /// over the next few frames). Lower = smoother under influx, slower fill-in.
     /// Dirty re-bakes (streamed-tile arrivals) share this cap; already-resident
-    /// chunks are always drawn (stale until their re-bake turn).
+    /// chunks are always drawn (stale until their re-bake turn). Default 48.
     #[export(range = (1.0, 4096.0, 1.0))]
     #[init(val = 48)]
-    max_bakes_per_frame: i64,
+    pub max_bakes_per_frame: i64,
     /// TEST (temporary): bypass the per-chunk cache and re-realize + re-bake every
     /// VISIBLE chunk EVERY frame (no persistence, no eviction). Lets you probe the
     /// raw per-frame realize+bake cost at high `tile_res`/`chunk_res` without the
     /// cache size limiting things. Off = normal cached path.
     #[export]
     #[init(val = false)]
-    recompute_every_frame: bool,
+    pub recompute_every_frame: bool,
 
     /// Scatter layers (CEL-73): each layer scatters one mesh over the planet on
     /// a stable world lattice, with LIVE `density` + `min_height`/`max_height`
@@ -138,22 +164,22 @@ pub struct Celestial {
     /// `lod_level` sets density/reach; adding/removing layers (or changing
     /// `instances_per_cell`/`max_instances`) rebuilds the GPU job.
     #[export]
-    scatter_layers: Array<Gd<CesScatterLayer>>,
+    pub scatter_layers: Array<Gd<CesScatterLayer>>,
 
     /// The terrain **builder** (one active at a time). Its TYPE (a `CesBuilder`
     /// subclass) decides how the surface is produced. A new planet starts with a
-    /// GPU-example builder (added in [`ready`]); **clear it to render a plain
+    /// GPU-example builder (added when the node is first readied); **clear it to render a plain
     /// white sphere**. Swapping or editing the builder reshades/rebuilds live.
     #[var(get = get_builder, set = set_builder)]
     #[export]
-    builder: Option<Gd<CesBuilder>>,
+    pub builder: Option<Gd<CesBuilder>>,
 
     /// Hidden, storage-only guard: add the default builder the first time a
     /// builder-less planet is readied, then never again (so clearing the builder
     /// stays white). Not shown in the inspector — see `on_validate_property`.
     #[export]
     #[init(val = true)]
-    auto_add_builder: bool,
+    pub auto_add_builder: bool,
 
     /// Analytic planetary water proxy (created lazily). Its toggle, water level,
     /// and look params all come from the active [`CesBuilder`], so water config
@@ -859,7 +885,7 @@ impl Celestial {
     /// re-wired). A pure param edit is applied live, by kind, then every resident
     /// chunk is invalidated so it re-realizes with the new values.
     #[func]
-    fn get_builder(&self) -> Option<Gd<CesBuilder>> {
+    pub fn get_builder(&self) -> Option<Gd<CesBuilder>> {
         self.builder.clone()
     }
 
@@ -867,7 +893,7 @@ impl Celestial {
     /// Rebuilds the job so the new type/params take effect immediately; the next
     /// frame re-wires the new builder's `changed` signal (via `connect_builders`).
     #[func]
-    fn set_builder(&mut self, v: Option<Gd<CesBuilder>>) {
+    pub fn set_builder(&mut self, v: Option<Gd<CesBuilder>>) {
         self.builder = v;
         // Rebuild from scratch (kind/provider/compiled shader may all differ).
         self.teardown_job();
@@ -876,7 +902,7 @@ impl Celestial {
     }
 
     #[func]
-    fn on_builder_changed(&mut self) {
+    pub fn on_builder_changed(&mut self) {
         let new_kind = self.active_builder().map(|b| crate::builder::route_of(&b));
         let new_custom = self.build_custom_surface();
         let new_src = new_custom.as_ref().map(|(s, ..)| s.clone());
@@ -1082,14 +1108,14 @@ impl Celestial {
     /// bakes plus baked patches waiting for cache admission. `0` ⇒ every chunk
     /// in view is resident at its target LOD (nothing left to arrive).
     #[func]
-    fn chunks_in_queue(&self) -> i64 {
+    pub fn chunks_in_queue(&self) -> i64 {
         let baking = self.bake_pool.as_ref().map(|p| p.in_flight_len()).unwrap_or(0);
         (baking + self.ready_surfaces.len()) as i64
     }
 
     /// Absolute path of the provider's on-disk cache (empty when none).
     #[func]
-    fn tile_cache_path(&self) -> GString {
+    pub fn tile_cache_path(&self) -> GString {
         match self.provider.as_ref().and_then(|p| p.cache_dir()) {
             Some(d) => GString::from(d.as_str()),
             None => GString::new(),
@@ -1098,7 +1124,7 @@ impl Celestial {
 
     /// Provider resource fetches currently in flight (network + decode).
     #[func]
-    fn tiles_in_flight(&self) -> i64 {
+    pub fn tiles_in_flight(&self) -> i64 {
         self.provider.as_ref().map(|p| p.resources_in_flight() as i64).unwrap_or(0)
     }
 
@@ -1107,7 +1133,7 @@ impl Celestial {
     /// a hole on screen (unadmitted/throttled chunks). Example output:
     /// `cut 271 drawn 268 | d7:12 d8:24 ... d16:40`.
     #[func]
-    fn cut_report(&self) -> GString {
+    pub fn cut_report(&self) -> GString {
         let mut hist = [0u32; 24];
         for &d in &self.last_cut_depths {
             hist[(d as usize).min(23)] += 1;
@@ -1129,14 +1155,18 @@ impl Celestial {
         )
     }
 
+    /// **The one query gameplay code needs**: how to put something *on* the surface.
+    ///
     /// Radius (world units, from the planet centre) of the RENDERED ground in
-    /// direction `dir`: the bare sphere plus the CPU-surface displacement,
+    /// direction `dir` (a world-space direction from the centre), so
+    /// `dir.normalized() * ground_radius_at(dir)` is the surface point: the bare
+    /// sphere plus the CPU-surface displacement,
     /// sampled by the provider's `sample_height`. Use this to place
     /// cameras/objects on the surface instead of guessing an altitude — the
     /// ground can legitimately sit kilometres above the sphere. Returns the bare
     /// radius when no CPU-surface provider is active.
     #[func]
-    fn ground_radius_at(&self, dir: Vector3) -> f32 {
+    pub fn ground_radius_at(&self, dir: Vector3) -> f32 {
         let h = match self.provider.as_ref() {
             // No clamp: `ChunkRealize` displaces by the raw sampled height (the
             // seabed dips BELOW the sphere), so clamping here would report a
@@ -1150,7 +1180,7 @@ impl Celestial {
     /// TEMP DEBUG: schedule a render-thread dump of every drawn slot's vertex
     /// radius range (see `CesChunkJob::debug_dump_radii`).
     #[func]
-    fn debug_dump_radii(&self) {
+    pub fn debug_dump_radii(&self) {
         let Some(job) = &self.job else { return };
         // EXPECTED: the DEEPEST chunks (the near field — where the breakage
         // is). Print their cut index / slot / location, and have the GPU dump
@@ -1184,36 +1214,38 @@ impl Celestial {
     /// Any scatter layer's `changed` signal lands here (CEL-73); the edit is
     /// classified next frame in `check_scatter_structure` / the stage packer.
     #[func]
-    fn on_scatter_layer_changed(&mut self) {
+    pub fn on_scatter_layer_changed(&mut self) {
         self.scatter_dirty = true;
     }
 
+    /// Chunks currently holding a GPU pool slot (cached geometry + detail atlas).
+    /// Compare with `effective_budget` to see how full the VRAM budget is.
     #[func]
-    fn resident_count(&self) -> i64 {
+    pub fn resident_count(&self) -> i64 {
         self.cache.as_ref().map(|c| c.resident_count() as i64).unwrap_or(0)
     }
 
     /// Chunks realized in the last staged batch (0 once the camera settles).
     #[func]
-    fn realize_count(&self) -> i64 {
+    pub fn realize_count(&self) -> i64 {
         self.last_realize_count
     }
 
     /// Graph executes that actually consumed a stage (flat when stationary).
     #[func]
-    fn executes(&self) -> i64 {
+    pub fn executes(&self) -> i64 {
         self.job.as_ref().map(|j| j.bind().executes as i64).unwrap_or(0)
     }
 
     /// Last CPU selection time in milliseconds.
     #[func]
-    fn select_ms(&self) -> f64 {
+    pub fn select_ms(&self) -> f64 {
         self.last_select_ms
     }
 
     /// Last `ChunkCache::update` time in ms (eviction/bookkeeping cost).
     #[func]
-    fn update_ms(&self) -> f64 {
+    pub fn update_ms(&self) -> f64 {
         self.last_update_ms
     }
 
@@ -1224,7 +1256,7 @@ impl Celestial {
     /// this is the realize COMPUTE cost, distinct from the every-frame render
     /// (rasterization) cost shown as `render gpu`.
     #[func]
-    fn gpu_report(&self) -> GString {
+    pub fn gpu_report(&self) -> GString {
         let Some(job) = &self.job else { return GString::from("n/a") };
         let gpu_ms = &job.bind().gpu_ms;
         if gpu_ms.is_empty() {
@@ -1242,7 +1274,7 @@ impl Celestial {
 
     /// Triangles currently drawn = visible chunks × `chunk_res²`.
     #[func]
-    fn triangle_count(&self) -> i64 {
+    pub fn triangle_count(&self) -> i64 {
         let res = self.chunk_res.clamp(2, 32);
         self.last_visible_count * res * res
     }
@@ -1252,7 +1284,7 @@ impl Celestial {
     /// (float4=16) = 48 B × `verts_per_chunk(res)`. Phase 4 adds the detail
     /// atlases: colour(rgba8=4) + normal(rgba8=4) = 8 B × `tile_res²` per slot.
     #[func]
-    fn pool_vram_bytes(&self) -> i64 {
+    pub fn pool_vram_bytes(&self) -> i64 {
         self.effective_budget() as i64 * self.per_slot_bytes()
     }
 
@@ -1262,7 +1294,7 @@ impl Celestial {
     /// texture height (`slots×tile_res²/ATTR_TEX_WIDTH`) stays within the GPU's max
     /// texture dimension (the atlas is one strip of width `ATTR_TEX_WIDTH`).
     #[func]
-    fn effective_budget(&self) -> u32 {
+    pub fn effective_budget(&self) -> u32 {
         let tile_res = self.tile_res.clamp(8, 1024) as i64;
         let vram = (self.vram_budget_gib.max(0.01) as f64 * 1024.0 * 1024.0 * 1024.0) as i64;
         let from_vram = (vram / self.per_slot_bytes()).max(1);

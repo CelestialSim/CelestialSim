@@ -1,30 +1,50 @@
-# ⚠️ DRAFT — Developer Release Only
-> **This repository is a work in progress and under active development.**
->
-> - Releases are intended for developers and contributors only.
-> - This is *not* production-ready — expect breaking changes, unstable APIs, and incomplete features.
-> - If you are not a developer or contributor, please do not use or rely on these releases.
->
+# CelestialSim
 
-# Installation
+**GPU-realized procedural planets for Godot.**
 
-1. Download the latest `celestial-<version>.zip` from the [Releases page](https://github.com/CelestialSim/CelestialSim/releases).
-2. Extract the zip — it contains an `addons/` directory with `celestialsim/`.
-3. Copy `addons/celestialsim/` into your Godot project's `addons/` folder.
-4. Open the project in Godot — the GDExtension is loaded by `addons/celestialsim/celestialsim.gdextension`.
+Drop a `Celestial` node into a 3D scene and you get a whole planet with adaptive
+chunked-quadtree LOD: the CPU picks a screen-space-error cut, the GPU realizes the
+geometry and bakes the surface detail. Nothing in the terrain path reads back from the
+GPU, so flying toward the surface doesn't cause lag spikes.
 
-The release zip ships prebuilt binaries for Linux x86_64, Windows x86_64, and macOS (universal: x86_64 + arm64). Slang is dev-only (the compiled SPIR-V is baked into the extension), so no Slang plugin is needed at runtime or in the editor.
+### 📖 Everything — install, tutorials, API — is at **<https://celestialsim.github.io/CelestialSim/>**
 
-## Development
+> **Beta.** Usable today, but pre-1.0: APIs can change between releases. Bug reports and
+> feedback are welcome on
+> [GitHub](https://github.com/CelestialSim/CelestialSim/issues) or
+> [Discord](https://discord.gg/bfCcWkstRB).
 
-Build the extension from the `crates/` Cargo workspace with `cargo build -p celestialsim` (add `--release` for an optimized build).
+## What you get
 
-# Documentation
+- **An adaptive-LOD planet node** — one `Celestial` node; detail follows the camera.
+- **GPU noise terrain out of the box** — a new planet is never blank.
+- **Your own terrain** — write a `.glsl` and it runs on the GPU. No fork, no Rust.
+- **A CPU path too** — build terrain in GDScript when you need CPU-side data, synchronously
+  or off the main thread. Slower than the GPU path.
+- **An analytic ocean** — sea level and water colours live on the builder.
+- **GPU scatter objects** — grass, trees and rocks placed and culled on the GPU.
 
-The documentation CI publishes a small landing page plus the Rust API reference generated from `cargo doc`.
+## Install
 
-To build the Rust docs locally:
-1. Run `cargo doc -p celestialsim --no-deps`;
-2. Open `target/doc/celestialsim/index.html`.
+Download the latest zip from the
+[Releases page](https://github.com/CelestialSim/CelestialSim/releases) and copy
+`addons/celestialsim/` into your Godot **4.7** project. There is no plugin to enable and
+no Slang to install. Prebuilt for Linux, Windows and macOS —
+[full instructions](https://celestialsim.github.io/CelestialSim/install/).
 
-To build and open the docs in one step, run `cargo doc -p celestialsim --no-deps --open`.
+## Links
+
+- **Docs** — <https://celestialsim.github.io/CelestialSim/>
+- **How it works** — <https://celestialsim.github.io/CelestialSim/architecture/>
+- **Web demo of the GPU subdivision** — <https://compute.toys/view/3159>
+- **Playable demo builds** — <https://github.com/Calonca/CelestialSimDemo/releases>
+- **Discord** — <https://discord.gg/bfCcWkstRB>
+
+## Building from source
+
+```bash
+cargo build -p celestialsim            # add --release for an optimized build
+```
+
+You do not need `slangc`: the compute SPIR-V is committed and baked into the extension.
+For the Rust API reference, run `cargo doc -p celestialsim --no-deps --open`.
