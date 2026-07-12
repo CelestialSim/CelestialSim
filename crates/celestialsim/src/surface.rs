@@ -11,8 +11,8 @@
 //!   [`CpuSurfaceProvider`] off the main thread to produce a [`ChunkSurface`],
 //!   which the planet uploads into buffers 4/5/6 and the shaders read when the
 //!   surface is enabled. The built-in provider is [`crate::noise_provider`]
-//!   (CPU fBm terrain), used by a [`crate::builder::CesBuilder`] in
-//!   [`crate::builder::BuilderMode::CpuNoise`] mode.
+//!   (CPU fBm terrain), used by a [`crate::builder::CesBuilder`] on the
+//!   [`crate::builder::BuilderRoute::CpuNoise`] route.
 //!
 //! This module holds ONLY the neutral data type and the trait — no concrete
 //! surface source, no Godot rendering.

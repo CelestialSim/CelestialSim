@@ -10,8 +10,8 @@
 //! `pos = dir * (radius + (h - 0.5) * 2.4 * radius * height_scale)`. Evaluated
 //! at `h = water_height` that is the sea-level radius below. The same formula is
 //! used for every builder (noise or custom) so the water level slider means the
-//! same thing everywhere — at `water_height = 0.5` the sea sits exactly at
-//! `radius` (the noise midpoint AND the custom `h = 0` baseline).
+//! same thing everywhere — `water_height = 0.5` is the baseline (the noise
+//! midpoint AND the custom `h = 0` line), where the sea sits exactly at `radius`.
 
 /// The displacement shader maps a normalized height `h` to a centered offset
 /// `(h - 0.5) * HEIGHT_CENTER_SCALE`. Keep in sync with `displace` in
@@ -19,10 +19,12 @@
 pub const HEIGHT_CENTER_SCALE: f32 = 2.4;
 
 /// World radius of the analytic sea-level sphere: the terrain surface radius
-/// evaluated at `water_height`. For the HQ defaults (water_height 0.45,
-/// height_scale 0.25) this is `0.97 * radius` — slightly inside the mean
-/// surface, so terrain pokes through to form seas/lakes exactly where the
-/// noise dips below water.
+/// evaluated at `water_height`. `water_height = 0.5` is the baseline — the noise
+/// midpoint / custom `h = 0` line — at which the sea sits exactly at `radius`. At
+/// the shipped defaults (`CesBuilder::water_height` 0.549, `CesGPUNoiseExample`'s
+/// `height_scale` 0.0585) it sits slightly above, at `1.0069 * radius`, so terrain
+/// pokes through to form seas/lakes wherever the height rises above water.
+/// Lowering the level drains the seas; raising it floods low land.
 pub fn water_radius(radius: f32, water_height: f32, height_scale: f32) -> f32 {
     let centered = (water_height - 0.5) * HEIGHT_CENTER_SCALE;
     radius * (1.0 + centered * height_scale)
@@ -44,8 +46,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hq_defaults_put_water_just_below_surface() {
+    fn water_below_the_midpoint_sits_inside_the_surface() {
         // water_height 0.45, height_scale 0.25 => (0.45-0.5)*2.4*0.25 = -0.03.
+        // (NOT the default: `CesBuilder::water_height` defaults to 0.5.)
         let r = water_radius(1000.0, 0.45, 0.25);
         assert!((r - 970.0).abs() < 1e-3, "expected 970.0, got {r}");
     }

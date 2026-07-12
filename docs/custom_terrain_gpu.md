@@ -93,11 +93,15 @@ extends CesBuilder
 @export_range(0.0, 1.0, 0.001) var snow_line: float = 0.8
 
 func _init() -> void:
-    device = 0 # BuilderDevice.GPU; builtin_shader stays None (custom .glsl)
+    device = 0  # BuilderDevice.GPU (0 = GPU, 1 = CPU); builtin_shader stays None
     shader_file =  # add the path to your shader here, you can drag and drop from the FileSystem
     # you will have a path similar to the following
     # shader_file = "res://planets/custom_example.glsl"
 ```
+
+> `device` is an **int** in GDScript: `0` = GPU, `1` = CPU. The `BuilderDevice`
+> enum is Rust-side (it renders as a dropdown in the inspector) and its names
+> aren't reachable from GDScript, so write the number.
 
 > **Plain `@export` is enough — live updates just work.** The planet polls your
 > builder's `@export` float values each frame and reshades when one changes, so a
@@ -141,9 +145,10 @@ Rules:
 
 ## Driving it from Rust / GDScript
 
-`CesBuilder` is an ordinary resource. Set `device` (`BuilderDevice::GPU`) and
-`shader_file` from Rust or GDScript, or `extends CesBuilder` and set them in
-`_init` — the `.glsl` is the interface either way.
+`CesBuilder` is an ordinary resource. Set `device` (`BuilderDevice::GPU` in Rust,
+the int `0` in GDScript) and `shader_file` from either language, or
+`extends CesBuilder` and set them in `_init` — the `.glsl` is the interface
+either way.
 
 ## If the shader has an error
 
