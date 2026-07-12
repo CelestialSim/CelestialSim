@@ -1,0 +1,129 @@
+[gd_scene format=4 uid="uid://dr1rvoocwmtmi"]
+
+[ext_resource type="Script" uid="uid://pw7wr8fnvftn" path="res://scripts/quadtree_chunks.gd" id="1_m70qh"]
+[ext_resource type="ArrayMesh" uid="uid://bij504k2l562j" path="res://addons/celestialsim/grass_blade.tres" id="2_blade"]
+[ext_resource type="ArrayMesh" path="res://assets/trees/oak_medium_branches.res" id="3_oakb"]
+[ext_resource type="ArrayMesh" path="res://assets/trees/oak_medium_leaves.res" id="4_oakl"]
+[ext_resource type="Script" uid="uid://c6mw4fujfkbwn" path="res://addons/celestialsim/builders/ces_cpu_noise.gd" id="5_78wmw"]
+
+[sub_resource type="CesScatterLayer" id="CesScatterLayer_f572r"]
+layer_name = "Grass Variant 1"
+density = 1.0
+mesh = ExtResource("2_blade")
+scale = 0.95
+min_height = 0.55
+max_height = 0.7
+lod_level = 6
+instances_per_cell = 64
+resource_name = "Grass Variant 1"
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_p58qw"]
+cull_mode = 2
+vertex_color_use_as_albedo = true
+metallic_specular = 0.3
+roughness = 0.85
+
+[sub_resource type="ArrayMesh" id="ArrayMesh_78wmw"]
+_surfaces = [{
+"aabb": AABB(-0.05, 0, 0, 0.1, 1, 0.22),
+"attribute_data": PackedByteArray("DDMH/wwzB/8URwr/FEcK/yNmD/8jZg//PYQW/z2EFv9gniH/"),
+"format": 34359742479,
+"index_count": 21,
+"index_data": PackedByteArray("AAACAAEAAQACAAMAAgAEAAMAAwAEAAUABAAGAAUABQAGAAcABgAIAAcA"),
+"material": SubResource("StandardMaterial3D_p58qw"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 9,
+"vertex_data": PackedByteArray("zcxMvQAAAAAAAAAAzcxMPQAAAAAAAAAAf2o8vTMzsz4K16M8f2o8PTMzsz4K16M846UbvVK4Hj+4HoU946UbPVK4Hj+4HoU99P3UvD0KVz+4HgU+9P3UPD0KVz+4HgU+AAAAAAAAgD+uR2E+ekX/fz+q6qaEuv9/v1XqptVMNJMfnwimKbM0k7pSC7A4UBuoGIXKosavG6iVRYvC1UyfuRhgXKkps5+5EUyPz/9///8AAP+/")
+}]
+
+[sub_resource type="CesScatterLayer" id="CesScatterLayer_pabfr"]
+layer_name = "Grass Variant 2"
+density = 1.0
+mesh = SubResource("ArrayMesh_78wmw")
+scale = 1.1
+min_height = 0.56
+max_height = 0.68
+lod_level = 6
+instances_per_cell = 64
+seed = 1
+resource_name = "Grass Variant 2"
+
+[sub_resource type="CesScatterLayer" id="CesScatterLayer_oakb"]
+layer_name = "Oak branches"
+mesh = ExtResource("3_oakb")
+scale = 0.5
+min_height = 0.57
+max_height = 0.67
+lod_level = 4
+instances_per_cell = 2
+seed = 11
+resource_name = "Oak branches"
+
+[sub_resource type="CesScatterLayer" id="CesScatterLayer_oakl"]
+layer_name = "Oak leaves"
+mesh = ExtResource("4_oakl")
+scale = 0.5
+min_height = 0.57
+max_height = 0.67
+lod_level = 4
+instances_per_cell = 2
+seed = 11
+resource_name = "Oak leaves"
+
+[sub_resource type="CesBuilder" id="CesBuilder_hdclc"]
+device = 1
+builtin_shader = 1
+script = ExtResource("5_78wmw")
+frequency = 2.0
+metadata/_custom_type_script = "uid://c6mw4fujfkbwn"
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_vv7bd"]
+sky_top_color = Color(0.235, 0.412, 0.682, 1)
+sky_horizon_color = Color(0.62, 0.71, 0.78, 1)
+sky_curve = 0.12
+ground_bottom_color = Color(0.16, 0.14, 0.12, 1)
+ground_horizon_color = Color(0.55, 0.5, 0.42, 1)
+sun_angle_max = 4.0
+sun_curve = 0.05
+
+[sub_resource type="Sky" id="Sky_hq"]
+sky_material = SubResource("ProceduralSkyMaterial_vv7bd")
+radiance_size = 4
+
+[sub_resource type="Environment" id="Environment_85a6f"]
+background_mode = 2
+sky = SubResource("Sky_hq")
+ambient_light_source = 3
+reflected_light_source = 2
+tonemap_mode = 3
+
+[node name="Root" type="Node3D" unique_id=947999170]
+script = ExtResource("1_m70qh")
+
+[node name="Celestial" type="Celestial" parent="." unique_id=1719665616]
+screen_error = 0.05
+chunk_res = 32
+tile_res = 256
+vram_budget_gib = 1.5
+cull_height_margin = 0.1
+scatter_layers = Array[CesScatterLayer]([SubResource("CesScatterLayer_f572r"), SubResource("CesScatterLayer_pabfr"), SubResource("CesScatterLayer_oakb"), SubResource("CesScatterLayer_oakl")])
+builder = SubResource("CesBuilder_hdclc")
+auto_add_builder = false
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=193307003]
+transform = Transform3D(1, 0, 0, 0, 0.7071, 0.7071, 0, -0.7071, 0.7071, 0, 0, 0)
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1769293581]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 2500)
+current = true
+far = 100000.0
+
+[node name="Hud" type="CanvasLayer" parent="." unique_id=914874560]
+
+[node name="Label" type="Label" parent="Hud" unique_id=320619876]
+offset_left = 12.0
+offset_top = 12.0
+
+[node name="Env" type="WorldEnvironment" parent="." unique_id=1131876325]
+environment = SubResource("Environment_85a6f")

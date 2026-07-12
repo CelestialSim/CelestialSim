@@ -1,0 +1,11 @@
+[package]
+name = "celestial-graph"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Engine-agnostic GPU computation graph: nodes are shader operations, edges
+# are buffers/textures, the executor re-runs only dirty nodes. No godot
+# dependency by design — the device is abstracted behind a recording trait.
+
+[dependencies]

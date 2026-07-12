@@ -1,0 +1,17 @@
+# Getting Started
+
+!!! warning "Draft documentation"
+	This documentation is still in progress and missing key pages/sections.
+
+## Prerequisites
+
+- Rust
+## Build and preview the docs
+
+From the repository root:
+
+```bash
+cargo doc -p celestialsim --no-deps --open
+```
+
+This generates the Rust API reference and opens the local `rustdoc` site in your browser.

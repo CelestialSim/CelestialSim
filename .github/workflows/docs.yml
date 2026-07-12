@@ -1,0 +1,73 @@
+name: Documentation
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  ZENSICAL_VERSION: "0.0.37"
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/configure-pages@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build Zensical site
+        run: uvx zensical@${ZENSICAL_VERSION} build --clean
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust API docs
+        # v4 ships committed SPIR-V baked into the crate, so no slangc is needed.
+        run: cargo doc -p celestialsim --no-deps
+
+      - name: Merge Rust API docs into site
+        run: |
+          set -euo pipefail
+          mkdir -p site/api
+          cp -R target/doc/. site/api/
+          touch site/.nojekyll
+
+      - name: Verify built site
+        run: |
+          set -euo pipefail
+          REQUIRED=(
+            "site/index.html"
+            "site/install/index.html"
+            "site/api/celestialsim/index.html"
+          )
+          STATUS=0
+          for path in "${REQUIRED[@]}"; do
+            if [ -e "$path" ]; then
+              echo "OK $path"
+            else
+              echo "MISSING $path"
+              STATUS=1
+            fi
+          done
+          exit $STATUS
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - uses: actions/deploy-pages@v4
+        id: deployment

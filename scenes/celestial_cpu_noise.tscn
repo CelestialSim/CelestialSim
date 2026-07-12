@@ -1,0 +1,108 @@
+[gd_scene load_steps=14 format=3]
+
+[ext_resource type="Script" path="res://scripts/fly_camera.gd" id="1_fly"]
+[ext_resource type="Script" path="res://scripts/gpu_noise_hud.gd" id="2_hud"]
+[ext_resource type="Script" path="res://addons/celestialsim/builders/ces_cpu_noise.gd" id="6_cpunoise"]
+[ext_resource type="ArrayMesh" path="res://addons/celestialsim/grass_blade.tres" id="3_blade"]
+[ext_resource type="ArrayMesh" path="res://assets/trees/oak_medium_branches.res" id="4_oakb"]
+[ext_resource type="ArrayMesh" path="res://assets/trees/oak_medium_leaves.res" id="5_oakl"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.02, 0.03, 0.06, 1)
+sky_horizon_color = Color(0.05, 0.07, 0.12, 1)
+ground_bottom_color = Color(0.01, 0.01, 0.02, 1)
+ground_horizon_color = Color(0.03, 0.04, 0.07, 1)
+
+[sub_resource type="Sky" id="Sky_space"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_space"]
+background_mode = 2
+sky = SubResource("Sky_space")
+ambient_light_source = 3
+reflected_light_source = 2
+tonemap_mode = 3
+
+[sub_resource type="CesBuilder" id="MeshLayer_cpu_noise"]
+script = ExtResource("6_cpunoise")
+layer_name = "CPU continents + hills"
+frequency = 4.0
+octaves = 6.0
+amp = 0.25
+gain = 0.12
+lacunarity = 2.0
+ridge_tiles = 3.242
+ridge_octaves = 6.0
+ridge_gain = 0.5
+ridge_lacunarity = 1.8
+ridge_strength = 0.02
+height_scale = 0.03
+fd_eps = 0.0012
+water_height = 0.45
+
+[sub_resource type="CesScatterLayer" id="Scatter_grass"]
+layer_name = "Grass"
+density = 1.0
+mesh = ExtResource("3_blade")
+max_height = 0.55
+lod_level = 8
+instances_per_cell = 64
+resource_name = "Grass"
+
+[sub_resource type="CesScatterLayer" id="Scatter_oakb"]
+layer_name = "Oak branches"
+mesh = ExtResource("4_oakb")
+scale = 0.5
+max_height = 0.55
+lod_level = 6
+instances_per_cell = 2
+seed = 11
+resource_name = "Oak branches"
+
+[sub_resource type="CesScatterLayer" id="Scatter_oakl"]
+layer_name = "Oak leaves"
+mesh = ExtResource("5_oakl")
+scale = 0.5
+max_height = 0.55
+lod_level = 6
+instances_per_cell = 2
+seed = 11
+resource_name = "Oak leaves"
+
+[node name="CelestialCpuNoise" type="Node3D"]
+
+[node name="Env" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_space")
+
+[node name="Planet" type="Celestial" parent="."]
+radius = 6371.0
+screen_error = 0.05
+chunk_res = 20
+tile_res = 256
+max_depth = 18
+vram_budget_gib = 2.5
+cull_height_margin = 0.1
+max_bakes_per_frame = 8
+builder = SubResource("MeshLayer_cpu_noise")
+scatter_layers = Array[CesScatterLayer]([SubResource("Scatter_grass"), SubResource("Scatter_oakb"), SubResource("Scatter_oakl")])
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.2686556, -0.7292456, 0.6293052, 0.95114154, -0.09763944, 0.292917, -0.15215784, 0.67724925, 0.7198455, 0, 2000, 0)
+light_color = Color(1, 1, 1, 1)
+light_energy = 1.2
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 9000)
+near = 0.01
+far = 200000.0
+script = ExtResource("1_fly")
+speed = 3000.0
+planet_radius = 6371.0
+
+[node name="Hud" type="CanvasLayer" parent="."]
+script = ExtResource("2_hud")
+planet_path = NodePath("../Planet")
+
+[node name="Label" type="Label" parent="Hud"]
+offset_left = 12.0
+offset_top = 12.0

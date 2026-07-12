@@ -1,0 +1,723 @@
+# Builds the v4 CelestialSim GDExtension for all platforms and assembles an
+# installable Godot addon package, published as a GitHub Release asset.
+#
+# Linear: CEL-20 (Add CI to build the package the user can install)
+#         CEL-55 (asset-light library: publish installable plugin package)
+#         CEL-61 (slang dev-only: committed SPIR-V, no slangc at build time)
+#
+# Triggers:
+#   - push of a tag matching `v*`  -> builds + publishes a release for that tag.
+#   - workflow_dispatch            -> builds + publishes a release for the
+#                                     manually supplied version.
+# In both cases the per-platform cdylibs are also uploaded as build artifacts
+# (handy for inspecting dispatch runs without cutting a release).
+name: Create Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Release notes'
+        required: false
+        type: string
+        default: ''
+
+env:
+  SLANG_VERSION: v2026.12.2
+  SLANG_VERSION_BARE: 2026.12.2
+  # Godot used to export the celestial_v5 demo (desktop + Android). If 4.7 moves
+  # to a beta/rc channel rather than stable, only these two lines change.
+  GODOT_VERSION: "4.7"
+  GODOT_RELEASE: stable
+
+jobs:
+  # CEL-61 gate: a normal build needs no slangc, but committed SPIR-V must be
+  # in sync with the .slang sources. Install slangc, regenerate, and fail if the
+  # committed artifacts drift. Also runs the workspace test suite (GPU realize/
+  # cubemap parity tests run here on the Linux runner).
+  gate:
+    name: SPIR-V gate + tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install slangc (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SLANG_DIR="$RUNNER_TEMP/slang"
+          mkdir -p "$SLANG_DIR"
+          ASSET="slang-${SLANG_VERSION_BARE}-linux-x86_64.tar.gz"
+          URL="https://github.com/shader-slang/slang/releases/download/${SLANG_VERSION}/${ASSET}"
+          echo "Downloading $URL"
+          curl -L --fail -o "$SLANG_DIR/$ASSET" "$URL"
+          tar -xzf "$SLANG_DIR/$ASSET" -C "$SLANG_DIR"
+          echo "$SLANG_DIR/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$SLANG_DIR/lib" >> "$GITHUB_ENV"
+
+      - name: Verify slangc on PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v slangc
+          slangc -v
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Regenerate committed SPIR-V and check for drift (CEL-61)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SLANG_RECOMPILE=1 cargo build -p celestialsim
+          git diff --exit-code crates/celestialsim/shaders/spirv
+
+      - name: Run tests
+        shell: bash
+        run: cargo test --workspace --locked
+
+      - name: Dependency licenses gate (regenerate + drift + copyleft check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/gen_dep_licenses.py
+          git diff --exit-code THIRD_PARTY_LICENSES_DEPS.md
+
+  build:
+    name: Build cdylib (${{ matrix.runner }})
+    needs: gate
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            libname: libcelestialsim.so
+            os_short: linux
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            libname: celestialsim.dll
+            os_short: windows
+          - runner: macos-latest
+            libname: libcelestialsim.dylib
+            os_short: macos
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # No slangc here: v4 bakes committed SPIR-V into the cdylib (CEL-61).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust targets (non-macOS)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Add Rust targets (macOS universal)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build cdylib (Linux/Windows)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: cargo build --locked --release -p celestialsim --target ${{ matrix.target }}
+
+      - name: Build cdylib (macOS x86_64 + aarch64)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p celestialsim --target x86_64-apple-darwin
+          cargo build --locked --release -p celestialsim --target aarch64-apple-darwin
+
+      - name: Lipo macOS universal binary
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p universal-out
+          lipo -create \
+            -output universal-out/${{ matrix.libname }} \
+            target/x86_64-apple-darwin/release/${{ matrix.libname }} \
+            target/aarch64-apple-darwin/release/${{ matrix.libname }}
+          INFO="$(lipo -info universal-out/${{ matrix.libname }})"
+          echo "$INFO"
+          echo "$INFO" | grep -q "x86_64" || { echo "Missing x86_64 slice"; exit 1; }
+          echo "$INFO" | grep -q "arm64" || { echo "Missing arm64 slice"; exit 1; }
+
+      # TODO: addons/celestialsim/celestialsim.gdextension currently points at
+      # `res://target/<profile>/...` — a dev path, not a packaged addon-relative
+      # `bin/` dir. The shipping layout is unsettled: before this produces an
+      # installable addon, decide on a packaged `bin/<os>/release/` location,
+      # stage the built libs there, and repoint celestialsim.gdextension at it.
+      # For now we stage the raw cdylibs per-OS so the artifacts are inspectable.
+      - name: Stage cdylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="staging/libs/${{ matrix.os_short }}"
+          mkdir -p "$STAGE"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cp "universal-out/${{ matrix.libname }}" "$STAGE/${{ matrix.libname }}"
+          else
+            cp "target/${{ matrix.target }}/release/${{ matrix.libname }}" "$STAGE/${{ matrix.libname }}"
+          fi
+          ls -la "$STAGE"
+
+      - name: Upload cdylib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdylib-${{ matrix.os_short }}
+          path: staging/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Export the committed example scene (scenes/celestial_v5.tscn) as a runnable
+  # demo for Linux + Windows. Both are exported from a single Linux runner: the
+  # per-platform cdylibs come from the `build` job's artifacts, and Godot can
+  # export to any target from the Linux host. export_presets.cfg is gitignored,
+  # so it is generated here.
+  demo-desktop:
+    name: Export demo (Linux + Windows)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download cdylib artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dl
+          pattern: cdylib-*
+          merge-multiple: true
+
+      # The host Godot (a Linux editor build) loads the GDExtension to resolve the
+      # Ces* classes in the scene, so the Linux .so must sit at the editor path
+      # (target/debug) as well as the Linux release-pack path. The Windows .dll
+      # goes where the .gdextension's windows.release entry points.
+      - name: Stage cdylibs at the paths celestialsim.gdextension expects
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/debug target/release
+          cp dl/libs/linux/libcelestialsim.so   target/debug/libcelestialsim.so
+          cp dl/libs/linux/libcelestialsim.so   target/release/libcelestialsim.so
+          cp dl/libs/windows/celestialsim.dll   target/release/celestialsim.dll
+          ls -la target/debug target/release
+
+      # The editor (~70 MB) + export templates (~1.2 GB .tpz) are cached per Godot
+      # version, so only the first run after a version bump downloads them.
+      - name: Cache Godot ${{ env.GODOT_VERSION }} + export templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-bin
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_RELEASE }}-linux
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} + export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_RELEASE}"
+          mkdir -p "$HOME/godot-bin"
+          curl -L --fail -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_linux.x86_64.zip"
+          unzip -q godot.zip
+          mv "Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_linux.x86_64" "$HOME/godot-bin/godot"
+          chmod +x "$HOME/godot-bin/godot"
+          curl -L --fail -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_export_templates.tpz"
+          TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_RELEASE}"
+          mkdir -p "$TPL_DIR"
+          unzip -q templates.tpz -d templates_extracted
+          mv templates_extracted/templates/* "$TPL_DIR/"
+
+      - name: Add Godot to PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$HOME/godot-bin" >> "$GITHUB_PATH"
+          "$HOME/godot-bin/godot" --headless --version
+
+      - name: Write export_presets.cfg (Linux + Windows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > export_presets.cfg <<'EOF'
+          [preset.0]
+
+          name="Linux"
+          platform="Linux"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter="*/debug/*,*/crates/*"
+          export_path="build/linux/celestial_v5.x86_64"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          seed=0
+          encrypt_pck=false
+          encrypt_directory=false
+          script_export_mode=2
+
+          [preset.0.options]
+
+          debug/export_console_wrapper=0
+          binary_format/embed_pck=false
+          texture_format/s3tc_bptc=true
+          texture_format/etc2_astc=false
+          binary_format/architecture="x86_64"
+
+          [preset.1]
+
+          name="Windows Desktop"
+          platform="Windows Desktop"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter="*/debug/*,*/crates/*"
+          export_path="build/windows/celestial_v5.exe"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          seed=0
+          encrypt_pck=false
+          encrypt_directory=false
+          script_export_mode=2
+
+          [preset.1.options]
+
+          debug/export_console_wrapper=0
+          binary_format/embed_pck=false
+          texture_format/s3tc_bptc=true
+          texture_format/etc2_astc=false
+          binary_format/architecture="x86_64"
+          codesign/enable=false
+          application/modify_resources=true
+          application/export_angle=0
+          application/export_d3d12=0
+          EOF
+
+      # Import resources before exporting (headless projects have no committed
+      # .godot cache). Run twice: the first pass can error while it is still
+      # generating imports the extension/resources depend on.
+      - name: Import resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --import || true
+          godot --headless --path . --import
+
+      - name: Export Linux + Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/linux build/windows
+          godot --headless --path . --export-release "Linux" build/linux/celestial_v5.x86_64
+          godot --headless --path . --export-release "Windows Desktop" build/windows/celestial_v5.exe
+          echo "=== linux ===" && ls -la build/linux
+          echo "=== windows ===" && ls -la build/windows
+          test -f build/linux/celestial_v5.x86_64
+          test -f build/windows/celestial_v5.exe
+
+      # The export presets use export_filter="all_resources", so root-level
+      # licence files never land in the .pck — ship them next to the executable.
+      - name: Stage licence files next to the demo executables
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in build/linux build/windows; do
+            cp THIRD_PARTY_NOTICES.md "$dir/"
+            cp THIRD_PARTY_LICENSES_DEPS.md "$dir/"
+            if [ -f LICENSE ]; then
+              cp LICENSE "$dir/"
+            else
+              echo "::warning::LICENSE not found at the repo root; demo zips ship without it."
+            fi
+          done
+
+      - name: Zip demo builds
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd build/linux && zip -r ../../demo-linux.zip .)
+          (cd build/windows && zip -r ../../demo-windows.zip .)
+
+      - name: Upload demo (Linux)
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-linux
+          path: demo-linux.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload demo (Windows)
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-windows
+          path: demo-windows.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # Export the celestial_v5 demo as an Android APK. v5 ships committed SPIR-V and
+  # has no runtime slang dependency, so this uses Godot's standard (non-gradle)
+  # export template — no Android Gradle project, no gradle build. The Rust lib is
+  # cross-compiled for arm64 with cargo-ndk; the ubuntu runner's preinstalled
+  # Android SDK provides apksigner/zipalign for signing.
+  demo-android:
+    name: Export demo (Android APK)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Linux cdylib (host editor needs it to load Ces* classes)
+        uses: actions/download-artifact@v4
+        with:
+          name: cdylib-linux
+          path: dl
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The arm64 cdylib build succeeds even when a later step (Android
+          # export) fails, so persist its target/ cache on failed runs too —
+          # otherwise every failing run cold-rebuilds the cdylib.
+          cache-on-failure: true
+
+      # cargo-ndk is a build-time helper that rarely changes; cache the compiled
+      # binary (keyed on its version) so it is not rebuilt from source each run.
+      - name: Cache cargo-ndk
+        id: cargo-ndk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-ndk
+          key: cargo-ndk-4.1.2-${{ runner.os }}
+
+      - name: Install cargo-ndk
+        if: steps.cargo-ndk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Resolve Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          NDK="$(ls -d "$SDK"/ndk/* | sort -V | tail -n1)"
+          echo "Using NDK: $NDK"
+          echo "ANDROID_NDK_HOME=$NDK" >> "$GITHUB_ENV"
+
+      # No slangc: v5 bakes committed SPIR-V into the cdylib (CEL-61).
+      - name: Build celestialsim cdylib for arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo ndk -t arm64-v8a build --locked --release -p celestialsim
+          mkdir -p target/android/release target/debug
+          cp target/aarch64-linux-android/release/libcelestialsim.so target/android/release/libcelestialsim.so
+          # Linux .so so the host Godot editor can load the extension at export time.
+          cp dl/libs/linux/libcelestialsim.so target/debug/libcelestialsim.so
+          ls -la target/android/release target/debug
+
+      # The editor (~70 MB) + export templates (~1.2 GB .tpz) are cached per Godot
+      # version, so only the first run after a version bump downloads them.
+      - name: Cache Godot ${{ env.GODOT_VERSION }} + export templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot-bin
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_RELEASE }}-linux
+
+      - name: Download Godot ${{ env.GODOT_VERSION }} + export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_RELEASE}"
+          mkdir -p "$HOME/godot-bin"
+          curl -L --fail -o godot.zip "$BASE/Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_linux.x86_64.zip"
+          unzip -q godot.zip
+          mv "Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_linux.x86_64" "$HOME/godot-bin/godot"
+          chmod +x "$HOME/godot-bin/godot"
+          curl -L --fail -o templates.tpz "$BASE/Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_export_templates.tpz"
+          TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_RELEASE}"
+          mkdir -p "$TPL_DIR"
+          unzip -q templates.tpz -d templates_extracted
+          mv templates_extracted/templates/* "$TPL_DIR/"
+
+      - name: Add Godot to PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "$HOME/godot-bin" >> "$GITHUB_PATH"
+          "$HOME/godot-bin/godot" --headless --version
+
+      - name: Generate debug keystore + Godot editor settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYSTORE="$HOME/debug.keystore"
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey \
+            -keypass android -keystore "$KEYSTORE" -storepass android \
+            -dname "CN=Android Debug,O=Android,C=US" -validity 9999
+          CFG_DIR="$HOME/.config/godot"
+          mkdir -p "$CFG_DIR"
+          cat > "$CFG_DIR/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/android_sdk_path = "${ANDROID_SDK_ROOT}"
+          export/android/debug_keystore = "${KEYSTORE}"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+          echo "ANDROID_KEYSTORE=$KEYSTORE" >> "$GITHUB_ENV"
+
+      - name: Write export_presets.cfg (Android)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > export_presets.cfg <<EOF
+          [preset.0]
+
+          name="Android"
+          platform="Android"
+          runnable=true
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          include_filter=""
+          exclude_filter="*/debug/*,*/crates/*"
+          export_path="build/android/celestial_v5.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          seed=0
+          encrypt_pck=false
+          encrypt_directory=false
+          script_export_mode=2
+
+          [preset.0.options]
+
+          gradle_build/use_gradle_build=false
+          gradle_build/compress_native_libraries=false
+          gradle_build/export_format=0
+          keystore/release="${ANDROID_KEYSTORE}"
+          keystore/release_user="androiddebugkey"
+          keystore/release_password="android"
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          architectures/x86=false
+          architectures/x86_64=false
+          version/code=1
+          version/name="1.0"
+          package/unique_name="com.celestialsim.v5"
+          package/name="CelestialSim v5"
+          package/signed=true
+          texture_format/s3tc_bptc=false
+          texture_format/etc2_astc=true
+          screen/immersive_mode=true
+          EOF
+
+      - name: Import resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          godot --headless --path . --import || true
+          godot --headless --path . --import
+
+      - name: Export Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/android
+          godot --headless --path . --export-release "Android" build/android/celestial_v5.apk
+          ls -la build/android
+          test -f build/android/celestial_v5.apk
+
+      - name: Upload demo (Android APK)
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-android
+          path: build/android/celestial_v5.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  package:
+    name: Package and release
+    needs: [build, demo-desktop, demo-android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Tag push -> use the tag name; workflow_dispatch -> use the input.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="${{ inputs.version }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $VERSION"
+
+      - name: Download cdylib artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: staging
+          pattern: cdylib-*
+          merge-multiple: true
+
+      - name: Download demo build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: demo
+          pattern: demo-*
+          merge-multiple: true
+
+      # Assemble a drop-in addon: the shipped celestialsim.gdextension points at
+      # addon-relative bin/<os>/release/ paths (NOT the repo's dev res://target/
+      # paths), and the per-OS cdylibs from the build job are staged there. This
+      # way `addons/celestialsim/` is self-contained — copy it into a project and it
+      # just works. (The repo's committed .gdextension keeps its target/ paths for
+      # local dev + the demo exports; only the packaged copy is rewritten.)
+      - name: Assemble drop-in addon
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging/addons
+          cp -r addons/celestialsim staging/addons/
+          find staging/addons -name '*.import' -delete
+          rm -rf staging/addons/.godot
+
+          BIN="staging/addons/celestialsim/bin"
+          mkdir -p "$BIN/linux/release" "$BIN/windows/release" "$BIN/macos/release"
+          cp staging/libs/linux/libcelestialsim.so     "$BIN/linux/release/libcelestialsim.so"
+          cp staging/libs/windows/celestialsim.dll     "$BIN/windows/release/celestialsim.dll"
+          cp staging/libs/macos/libcelestialsim.dylib  "$BIN/macos/release/libcelestialsim.dylib"
+          rm -rf staging/libs
+
+          # Ship release libs for both editor (.debug) and export (.release) so
+          # the addon loads in-editor and in exported games without a debug build.
+          cat > staging/addons/celestialsim/celestialsim.gdextension <<'EOF'
+          [configuration]
+          entry_symbol = "gdext_rust_init"
+          compatibility_minimum = 4.1
+          reloadable = true
+
+          [libraries]
+          linux.debug.x86_64 = "res://addons/celestialsim/bin/linux/release/libcelestialsim.so"
+          linux.release.x86_64 = "res://addons/celestialsim/bin/linux/release/libcelestialsim.so"
+          windows.debug.x86_64 = "res://addons/celestialsim/bin/windows/release/celestialsim.dll"
+          windows.release.x86_64 = "res://addons/celestialsim/bin/windows/release/celestialsim.dll"
+          macos.debug = "res://addons/celestialsim/bin/macos/release/libcelestialsim.dylib"
+          macos.release = "res://addons/celestialsim/bin/macos/release/libcelestialsim.dylib"
+          macos.debug.arm64 = "res://addons/celestialsim/bin/macos/release/libcelestialsim.dylib"
+          macos.release.arm64 = "res://addons/celestialsim/bin/macos/release/libcelestialsim.dylib"
+          EOF
+          # Drop the committed .uid so the rewritten config imports cleanly.
+          rm -f staging/addons/celestialsim/celestialsim.gdextension.uid
+
+          # Ship the licences inside the addon so the zip is self-contained, and
+          # stage a copy for the standalone release assets. LICENSE may not exist
+          # yet — warn instead of failing.
+          mkdir -p release-assets
+          cp THIRD_PARTY_NOTICES.md staging/addons/celestialsim/
+          cp THIRD_PARTY_NOTICES.md release-assets/
+          cp THIRD_PARTY_LICENSES_DEPS.md staging/addons/celestialsim/
+          cp THIRD_PARTY_LICENSES_DEPS.md release-assets/
+          if [ -f LICENSE ]; then
+            cp LICENSE staging/addons/celestialsim/
+            cp LICENSE release-assets/
+          else
+            echo "::warning::LICENSE not found at the repo root; the addon zip and release assets ship without it."
+          fi
+
+      - name: Show staging tree
+        shell: bash
+        run: find staging -maxdepth 6 -print | sort
+
+      - name: Create zip
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd staging
+          zip -r "../celestialsim-addon-${VERSION}.zip" addons
+
+      - name: Upload addon artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: celestialsim-addon-${{ steps.version.outputs.version }}
+          path: celestialsim-addon-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body: ${{ inputs.release_notes }}
+          # LICENSE* is a glob: if the file does not exist yet the pattern simply
+          # matches nothing (fail_on_unmatched_files defaults to false).
+          files: |
+            celestialsim-addon-${{ steps.version.outputs.version }}.zip
+            demo/demo-linux.zip
+            demo/demo-windows.zip
+            demo/celestial_v5.apk
+            release-assets/THIRD_PARTY_NOTICES.md
+            release-assets/THIRD_PARTY_LICENSES_DEPS.md
+            release-assets/LICENSE*
+          draft: false
+          # Mark hyphenated versions (v0.1.0-pre-1, v1.0.0-rc1, …) as pre-releases.
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

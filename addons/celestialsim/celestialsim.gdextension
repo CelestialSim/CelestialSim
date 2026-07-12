@@ -1,0 +1,16 @@
+[configuration]
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.1
+reloadable = true
+
+[libraries]
+linux.debug.x86_64 = "res://target/debug/libcelestialsim.so"
+linux.release.x86_64 = "res://target/release/libcelestialsim.so"
+windows.debug.x86_64 = "res://target/debug/celestialsim.dll"
+windows.release.x86_64 = "res://target/release/celestialsim.dll"
+macos.debug = "res://target/debug/libcelestialsim.dylib"
+macos.release = "res://target/release/libcelestialsim.dylib"
+macos.debug.arm64 = "res://target/debug/libcelestialsim.dylib"
+macos.release.arm64 = "res://target/release/libcelestialsim.dylib"
+android.debug.arm64 = "res://target/android/release/libcelestialsim.so"
+android.release.arm64 = "res://target/android/release/libcelestialsim.so"

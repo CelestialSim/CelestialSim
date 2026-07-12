@@ -1,0 +1,21 @@
+[gd_resource type="ArrayMesh" format=4 uid="uid://bij504k2l562j"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_p58qw"]
+cull_mode = 2
+vertex_color_use_as_albedo = true
+metallic_specular = 0.3
+roughness = 0.85
+
+[resource]
+_surfaces = [{
+"aabb": AABB(-0.05, 0, 0, 0.1, 1, 0.22),
+"attribute_data": PackedByteArray("DDMH/wwzB/8URwr/FEcK/yNmD/8jZg//PYQW/z2EFv9gniH/"),
+"format": 34359742479,
+"index_count": 21,
+"index_data": PackedByteArray("AAACAAEAAQACAAMAAgAEAAMAAwAEAAUABAAGAAUABQAGAAcABgAIAAcA"),
+"material": SubResource("StandardMaterial3D_p58qw"),
+"primitive": 3,
+"uv_scale": Vector4(0, 0, 0, 0),
+"vertex_count": 9,
+"vertex_data": PackedByteArray("zcxMvQAAAAAAAAAAzcxMPQAAAAAAAAAAf2o8vTMzsz4K16M8f2o8PTMzsz4K16M846UbvVK4Hj+4HoU946UbPVK4Hj+4HoU99P3UvD0KVz+4HgU+9P3UPD0KVz+4HgU+AAAAAAAAgD+uR2E+ekX/fz+q6qaEuv9/v1XqptVMNJMfnwimKbM0k7pSC7A4UBuoGIXKosavG6iVRYvC1UyfuRhgXKkps5+5EUyPz/9///8AAP+/")
+}]

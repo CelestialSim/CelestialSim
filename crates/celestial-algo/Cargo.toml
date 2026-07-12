@@ -1,0 +1,12 @@
+[package]
+name = "celestial-algo"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Pure math: icosphere + clipmap patch descriptors. Depends on godot only for
+# value types (Vector3/Color); never touches engine classes, so tests run
+# without a Godot runtime.
+
+[dependencies]
+godot = { workspace = true }

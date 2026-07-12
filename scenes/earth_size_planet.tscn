@@ -1,0 +1,108 @@
+[gd_scene format=3 uid="uid://cwwlh104ysivp"]
+
+[ext_resource type="ArrayMesh" uid="uid://bij504k2l562j" path="res://addons/celestialsim/grass_blade.tres" id="1_lx3gj"]
+[ext_resource type="ArrayMesh" path="res://assets/trees/oak_medium_branches.res" id="2_5b7kk"]
+[ext_resource type="ArrayMesh" path="res://assets/trees/oak_medium_leaves.res" id="3_e4q6b"]
+[ext_resource type="Script" uid="uid://bom7pded3wb1b" path="res://addons/celestialsim/builders/ces_gpu_noise.gd" id="4_x1nhi"]
+[ext_resource type="Script" uid="uid://dow711xpufaol" path="res://scripts/fly_camera.gd" id="5_egbaa"]
+[ext_resource type="Script" uid="uid://dfywvgvo3jydq" path="res://scripts/gpu_noise_hud.gd" id="6_f3r4x"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.02, 0.03, 0.06, 1)
+sky_horizon_color = Color(0.05, 0.07, 0.12, 1)
+ground_bottom_color = Color(0.01, 0.01, 0.02, 1)
+ground_horizon_color = Color(0.03, 0.04, 0.07, 1)
+
+[sub_resource type="Sky" id="Sky_space"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_space"]
+background_mode = 2
+sky = SubResource("Sky_space")
+ambient_light_source = 3
+reflected_light_source = 2
+tonemap_mode = 3
+
+[sub_resource type="CesScatterLayer" id="Scatter_grass"]
+layer_name = "Grass"
+enabled = false
+density = 1.0
+mesh = ExtResource("1_lx3gj")
+min_height = 0.5
+max_height = 0.57
+lod_level = 8
+instances_per_cell = 64
+resource_name = "Grass"
+
+[sub_resource type="CesScatterLayer" id="Scatter_oakb"]
+layer_name = "Oak branches"
+density = 1.0
+mesh = ExtResource("2_5b7kk")
+min_height = 0.5
+max_height = 0.62
+lod_level = 13
+instances_per_cell = 1
+seed = 11
+resource_name = "Oak branches"
+
+[sub_resource type="CesScatterLayer" id="Scatter_oakl"]
+layer_name = "Oak leaves"
+density = 1.0
+mesh = ExtResource("3_e4q6b")
+min_height = 0.5
+max_height = 0.62
+lod_level = 13
+instances_per_cell = 1
+seed = 11
+resource_name = "Oak leaves"
+
+[sub_resource type="CesBuilder" id="MeshLayer_continents"]
+script = ExtResource("4_x1nhi")
+layer_name = "Continents + hills"
+frequency = 12.103
+octaves = 4.0
+amp = 0.729
+gain = 0.5
+water_height = 0.5
+ridge_octaves = 5.0
+ridge_strength = 0.05
+height_scale = 0.05
+fd_eps = 0.00148
+resource_name = "Continents + hills"
+
+[node name="CelestialGpuNoise" type="Node3D" unique_id=727092575]
+
+[node name="Env" type="WorldEnvironment" parent="." unique_id=1487320715]
+environment = SubResource("Environment_space")
+
+[node name="Planet" type="Celestial" parent="." unique_id=974138839]
+radius = 6371000.0
+screen_error = 0.04
+chunk_res = 20
+tile_res = 256
+max_depth = 20
+vram_budget_gib = 2.5
+max_bakes_per_frame = 8
+scatter_layers = Array[CesScatterLayer]([SubResource("Scatter_grass"), SubResource("Scatter_oakb"), SubResource("Scatter_oakl")])
+builder = SubResource("MeshLayer_continents")
+auto_add_builder = false
+
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=402117342]
+transform = Transform3D(-0.9878836, -0.12670922, -0.08960931, 0.03053936, -0.7247624, 0.6883222, -0.152158, 0.67724925, 0.7198482, 0, 2000, 0)
+light_energy = 1.2
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1401661905]
+transform = Transform3D(-0.39631984, 0.22528757, -0.8900428, 0, 0.9694267, 0.24538122, 0.9181125, 0.09724945, -0.38420302, 82583.15, 6377523.5, -48182.98)
+near = 0.01
+far = 200000.0
+script = ExtResource("5_egbaa")
+speed = 3000.0
+planet_radius = 6371.0
+
+[node name="Hud" type="CanvasLayer" parent="." unique_id=1797434620]
+script = ExtResource("6_f3r4x")
+planet_path = NodePath("../Planet")
+
+[node name="Label" type="Label" parent="Hud" unique_id=1183004690]
+offset_left = 12.0
+offset_top = 12.0

@@ -1,0 +1,19 @@
+[package]
+name = "celestialsim"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# The GDExtension: GPU-realized chunked-quadtree terrain. The CPU selects a
+# screen-space-error cut over a fixed triangular quadtree; Slang compute
+# realizes + bakes each chunk into an indirect MultiMesh with zero CPU readback.
+
+[lib]
+# rlib so integration tests can link the crate.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+godot = { workspace = true }
+bytemuck = { workspace = true }
+celestial-algo = { workspace = true }
+celestial-graph = { workspace = true }

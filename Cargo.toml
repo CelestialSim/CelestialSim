@@ -1,0 +1,25 @@
+# Virtual workspace for the v4 GPU crates.
+[workspace]
+resolver = "2"
+members = [
+    "crates/celestialsim",
+    "crates/celestial-algo",
+    "crates/celestial-graph",
+]
+
+[workspace.dependencies]
+# experimental-threads: the editor calls resource property accessors (e.g.
+# CesScatterLayer::get_mesh) from worker threads (threaded scene loading,
+# resource previews); without it the single-threaded binding panics. The v4
+# crate shipped with this feature for the same reason (CEL-65 layer resources).
+godot = { git = "https://github.com/godot-rust/gdext", branch = "master", version = "0.5.3", features = [
+    "experimental-threads",
+] }
+bytemuck = { version = "1", features = ["derive"] }
+celestial-algo = { path = "crates/celestial-algo" }
+celestial-graph = { path = "crates/celestial-graph" }
+
+# Shipping size: drop symbol tables from release cdylibs (the dynamic export
+# table gdext needs survives stripping).
+[profile.release]
+strip = true
