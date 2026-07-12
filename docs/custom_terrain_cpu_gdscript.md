@@ -19,7 +19,29 @@ direction.
 >
 > If the bake is slow — or has to **wait** on a file or the network — don't do it
 > here: use [Advanced: async bake](#advanced-async-bake-threads-files-network),
-> which never blocks the frame.
+> which moves the work off the frame.
+
+!!! warning "The CPU path is the slow path — even async"
+
+    In rough order of speed:
+
+    1. **GPU builder** (`.glsl`) — thousands of GPU threads, no CPU cost. Prefer it
+       for anything procedural.
+    2. **A CPU builder written in Rust**, as your own GDExtension — real threads, no
+       interpreter, no per-chunk marshalling between GDScript and the engine. If you
+       need CPU-side terrain and you care about frame times, this is the route that
+       actually holds up.
+    3. **This page — a CPU builder in GDScript.** The most convenient, and by a wide
+       margin the slowest.
+
+    And async is not a free pass. It keeps a heavy bake *off* the main thread, but it
+    does not make the CPU route free: `_bake_requested` itself runs on the main
+    thread, the results still have to be handed back and uploaded, and a burst of new
+    chunks — a fast dive at the surface, a teleport — can still cost you frames. It
+    turns a hard stall into a softer one, not into nothing.
+
+    The faster Rust builder API will get proper documentation of its own in a future
+    release.
 
 ## 1. Write the builder script
 
@@ -33,7 +55,7 @@ class_name MyCpuTerrain
 extends CesBuilder
 
 func _init() -> void:
-	device = 1 # BuilderDevice.CPU — the planet bakes height/color on the CPU
+	device = 1  # BuilderDevice.CPU (0 = GPU, 1 = CPU) — bake height/color on the CPU
 
 # REQUIRED — displacement as a FRACTION of the planet radius (0 = sea level),
 # one entry per direction. Each `dirs[i]` is a unit world-space direction.
@@ -68,6 +90,10 @@ func color(dirs: PackedVector3Array, heights: PackedFloat32Array) -> PackedColor
 #	return out
 ```
 
+> `device` is an **int** in GDScript: `0` = GPU, `1` = CPU. The `BuilderDevice`
+> enum is Rust-side (it renders as a dropdown in the inspector) and its names
+> aren't reachable from GDScript, so write the number and keep the comment.
+
 With the device set to **CPU** in `_init` the planet calls your batched
 `height`/`color`/`normal` once per chunk on the main-thread baker. To expose
 tunables as inspector sliders, see
@@ -100,7 +126,7 @@ extends CesBuilder
 @export_range(0.0, 1.0, 0.001) var snow_line: float = 0.8
 
 func _init() -> void:
-	device = 1 # CPU
+	device = 1  # BuilderDevice.CPU
 
 func height(dirs: PackedVector3Array) -> PackedFloat32Array:
 	var out := PackedFloat32Array()
@@ -139,7 +165,9 @@ the chunks it wants and moves on. You bake them however you like, and call
 **`submit_chunk`** when each one is ready.
 
 While a chunk has no surface it simply isn't drawn at full detail — a coarser
-ancestor covers that ground — so a slow bake costs detail, never framerate.
+ancestor covers that ground — so a slow bake mostly costs detail rather than
+framerate. "Mostly": the hand-off is still real work on the main thread, so a
+large burst of new chunks can cost you a frame or two even here.
 
 Only three names below belong to this library: the planet **calls**
 `_bake_requested` (and, optionally, `_base_ready`) on your builder, and you
@@ -153,7 +181,7 @@ class_name MyAsyncTerrain
 extends CesBuilder
 
 func _init() -> void:
-	device = 1 # CPU
+	device = 1  # BuilderDevice.CPU
 
 # CALLED BY THE PLANET, main thread, once per frame. Take the work and return —
 # never block here.
@@ -253,9 +281,11 @@ func _base_ready() -> bool:
 - `chunk_dirs(corners, tile_res)` is pure — safe from a worker thread. Call it
   only if you need per-texel directions; a tile-streaming builder usually wants a
   lat/lon box derived from `corners` instead.
-- Heights are in **your** unit; `height_scale` (inherited from `CesBuilder`)
-  multiplies them into the displacement. For real-world metres on an Earth-sized
-  planet, set `height_scale = exaggeration / 6_371_000.0`.
+- Heights are in **your** unit; a `height_scale` multiplies them into the
+  displacement. It is *not* inherited — declare it yourself
+  (`@export var height_scale: float`) and the library reads it by name. For
+  real-world metres on an Earth-sized planet, set
+  `height_scale = exaggeration / 6_371_000.0`.
 - Don't do slow work inside `_bake_requested` itself — it runs on the main
   thread. Hand it to a thread, a download, or a queue, and return.
 - Defining `_bake_requested` replaces `height`/`color`; don't write both.
@@ -269,8 +299,8 @@ func _base_ready() -> bool:
 - A missing `height` = flat, missing `color` = white, missing `normal` =
   finite-differenced — so partial builders still work. Returning a **shorter**
   array than `dirs.size()` leaves the remaining texels at the default.
-- The returned `height` is a fraction; the builder's `height_scale` (inherited
-  from `CesBuilder`) multiplies the geometry displacement.
+- The returned `height` is a fraction; a `height_scale` you declare on your builder
+  multiplies the geometry displacement (see above).
 
 ## Which path should I use?
 
@@ -280,7 +310,7 @@ func _base_ready() -> bool:
 | Language | GLSL | GDScript | GDScript |
 | Runs on | thousands of GPU threads | main thread, one batched call per chunk | wherever you put it |
 | Best for | procedural terrain | image/data-driven, CPU logic | slow bakes, streaming, network tiles |
-| Blocks the frame | no | yes, while it bakes | no |
+| Blocks the frame | no | yes, while it bakes | not while baking, but bursts can still cost frames |
 | tile_res | full (256+) | moderate | full |
 
 See [custom_terrain_gpu.md](custom_terrain_gpu.md) for the GPU path, or the

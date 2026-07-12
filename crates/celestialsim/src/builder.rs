@@ -185,14 +185,32 @@ pub fn builder_texture_gpu(p: &BuilderParams) -> TextureGpu {
     TextureGpu { water_height: p.water_height }
 }
 
-/// A terrain builder resource. See the module docs.
+/// The terrain source: a `Resource` you assign to [`Celestial::builder`]. It answers
+/// "what does this planet's surface look like?" — height, colour, and (since it also
+/// owns the `water_*` group) the ocean.
+///
+/// A planet has exactly one. Sub-class it in GDScript (`extends CesBuilder`) to write
+/// your own terrain, or use one of the shipped example builders; leave the property
+/// empty and the planet renders a plain white sphere. Every edit — a knob, the
+/// shader file, the water level — reshades the resident chunks live.
+///
+/// The routing between the built-in noise, a custom `.glsl` and custom GDScript is
+/// described in the [module docs](self); user-facing guides live at
+/// <https://celestialsim.github.io/CelestialSim/>.
+///
+/// [`Celestial::builder`]: crate::celestial::Celestial
 #[derive(GodotClass)]
 #[class(base = Resource, tool, init)]
 pub struct CesBuilder {
     base: Base<Resource>,
 
-    /// How the surface is produced. Switching this reshapes the inspector (only
-    /// the relevant fields stay visible) via `on_validate_property`.
+    /// Which device produces the surface. [`BuilderDevice::GPU`] (the default) is the
+    /// fast path: thousands of threads realize and bake each chunk with no readback.
+    /// [`BuilderDevice::CPU`] bakes chunk surfaces from Rust worker threads (built-in
+    /// noise) or from your GDScript `height`/`color` (custom) — far slower, and the
+    /// synchronous GDScript route runs on the main thread, so keep `tile_res`
+    /// moderate there. Switching this reshapes the inspector (only the relevant
+    /// fields stay visible) via `on_validate_property`.
     #[var(get = get_device, set = set_device)]
     #[export]
     pub device: BuilderDevice,
@@ -224,36 +242,44 @@ pub struct CesBuilder {
     #[init(val = 0.549)]
     pub water_height: f32,
 
-    /// **Water toggle** — draw an analytic ocean at the water level. Off hides the
-    /// water surface AND the appearance params below (they reappear when on).
+    /// **Water toggle** — draw the analytic ocean at `water_height` (default on).
+    /// Off removes the sea surface entirely (the land/sea colouring of the terrain
+    /// still follows `water_height`) and hides the appearance params below, which
+    /// reappear — with their stored values — when it is switched back on.
     #[export]
     #[init(val = true)]
     pub water_enabled: bool,
-    /// Deep-water body colour (far from shore).
+    /// Body colour of deep water, far from shore; blended toward
+    /// `water_shallow_color` as the sea floor rises. Default a dark blue.
     #[export]
     #[init(val = Color::from_rgb(0.05, 0.22, 0.42))]
     pub water_deep_color: Color,
-    /// Shallow-water body colour (near shore).
+    /// Body colour of shallow water near the shoreline — the coastal tint. Default a
+    /// light teal.
     #[export]
     #[init(val = Color::from_rgb(0.20, 0.55, 0.70))]
     pub water_shallow_color: Color,
-    /// Wave normal blend strength (0 = flat mirror).
+    /// How strongly the wave normals perturb the surface: 0 = a flat mirror,
+    /// 1 = maximum choppiness. Default 0.55.
     #[export(range = (0.0, 1.0, 0.01))]
     #[init(val = 0.55)]
     pub water_wave_strength: f32,
-    /// Wave tiling frequency.
+    /// Spatial frequency of the wave pattern — higher = smaller, tighter waves.
+    /// Default 0.15.
     #[export(range = (0.01, 1.0, 0.01))]
     #[init(val = 0.15)]
     pub water_wave_scale: f32,
-    /// Wave scroll speed.
+    /// How fast the wave pattern scrolls; 0 freezes the sea. Default 0.04.
     #[export(range = (0.0, 0.5, 0.005))]
     #[init(val = 0.04)]
     pub water_wave_speed: f32,
-    /// Underwater fog tint (Beer–Lambert) when the camera is below the surface.
+    /// Tint of the underwater fog (Beer–Lambert) applied when the camera is below
+    /// the surface. Default a murky blue.
     #[export]
     #[init(val = Color::from_rgb(0.04, 0.16, 0.28))]
     pub water_underwater_color: Color,
-    /// Underwater fog density (per world unit of water column).
+    /// Underwater fog density, per world unit of water column: higher = visibility
+    /// drops off faster once submerged; 0 = perfectly clear water. Default 0.02.
     #[export(range = (0.0, 0.2, 0.001))]
     #[init(val = 0.02)]
     pub water_underwater_density: f32,
@@ -433,11 +459,17 @@ impl CesBuilder {
     /// * `normals` — optional; leave empty to have the library finite-difference
     ///   the height grid for you.
     ///
-    /// Idempotent: call it again for the same handle to refine that chunk.
+    /// Idempotent: call it again for the same handle to refine that chunk (a coarse
+    /// tile now, a finer one when the download lands). A submission for a chunk that
+    /// has left the view is simply dropped — that is the whole cancellation story.
     /// Wrong-length arrays are rejected (one error is printed, then silence);
     /// non-finite heights are sanitized to `0.0`.
+    ///
+    /// The full contract (the `_bake_requested` request format, `_base_ready`) is in
+    /// the "Advanced: async bake" section of the custom-CPU-terrain guide at
+    /// <https://celestialsim.github.io/CelestialSim/>.
     #[func]
-    fn submit_chunk(
+    pub fn submit_chunk(
         &self,
         handle: i64,
         heights: PackedFloat32Array,
@@ -463,7 +495,7 @@ impl CesBuilder {
     /// a streaming builder wants a lat/lon box, not directions), so materialize
     /// them only if you need them. Pure: safe to call from a worker thread.
     #[func]
-    fn chunk_dirs(&self, corners: PackedVector3Array, tile_res: i64) -> PackedVector3Array {
+    pub fn chunk_dirs(&self, corners: PackedVector3Array, tile_res: i64) -> PackedVector3Array {
         let c = corners.as_slice();
         if c.len() != 3 || tile_res <= 0 {
             godot_error!("chunk_dirs: expected 3 corners and tile_res > 0");
@@ -476,11 +508,11 @@ impl CesBuilder {
     // ---- property accessors (each emits `changed` so live edits reshade) ----
 
     #[func]
-    fn get_device(&self) -> BuilderDevice {
+    pub fn get_device(&self) -> BuilderDevice {
         self.device
     }
     #[func]
-    fn set_device(&mut self, v: BuilderDevice) {
+    pub fn set_device(&mut self, v: BuilderDevice) {
         if self.device != v {
             self.device = v;
             // Reshape the inspector (show/hide fields for the new mode) and let
@@ -490,11 +522,11 @@ impl CesBuilder {
         }
     }
     #[func]
-    fn get_builtin_shader(&self) -> BuiltinShader {
+    pub fn get_builtin_shader(&self) -> BuiltinShader {
         self.builtin_shader
     }
     #[func]
-    fn set_builtin_shader(&mut self, v: BuiltinShader) {
+    pub fn set_builtin_shader(&mut self, v: BuiltinShader) {
         if self.builtin_shader != v {
             self.builtin_shader = v;
             self.base_mut().notify_property_list_changed();
@@ -502,22 +534,22 @@ impl CesBuilder {
         }
     }
     #[func]
-    fn get_shader_file(&self) -> GString {
+    pub fn get_shader_file(&self) -> GString {
         self.shader_file.clone()
     }
     #[func]
-    fn set_shader_file(&mut self, v: GString) {
+    pub fn set_shader_file(&mut self, v: GString) {
         if self.shader_file != v {
             self.shader_file = v;
             self.base_mut().emit_changed();
         }
     }
     #[func]
-    fn get_water_height(&self) -> f32 {
+    pub fn get_water_height(&self) -> f32 {
         self.water_height
     }
     #[func]
-    fn set_water_height(&mut self, v: f32) {
+    pub fn set_water_height(&mut self, v: f32) {
         if self.water_height != v {
             self.water_height = v;
             // The water level is a TERRAIN parameter (it sets the land/sea split

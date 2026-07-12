@@ -42,7 +42,6 @@ Copyright &copy; 2026 CelestialSim contributors
 # Read more: https://zensical.org/docs/setup/navigation/
 nav = [
   { "Home" = "index.md" },
-  { "Introduction" = "introduction.md" },
   { "Install" = "install.md" },
   { "Getting Started" = "getting-started.md" },
   { "Terrain builders" = [
@@ -50,6 +49,12 @@ nav = [
     { "Custom GPU terrain (GLSL)" = "custom_terrain_gpu.md" },
     { "Custom CPU terrain (GDScript)" = "custom_terrain_cpu_gdscript.md" },
   ] },
+  { "Reference" = [
+    { "Celestial node" = "celestial-node.md" },
+    { "Water" = "water.md" },
+    { "Scatter objects" = "scatter.md" },
+  ] },
+  { "How it works" = "architecture.md" },
   { "API Reference" = "api/celestialsim/index.html" },
 ]
 
